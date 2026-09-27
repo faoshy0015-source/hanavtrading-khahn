@@ -1,0 +1,548 @@
+import os
+import io
+import zipfile
+from datetime import datetime, timedelta
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+import streamlit as st
+import time
+
+st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
+
+REAL_URL="https://openapi.koreainvestment.com:9443"
+PAPER_URL="https://openapivts.koreainvestment.com:29443"
+
+st.markdown("""<style>
+:root {
+    --hana-green:#00B86B;
+    --hana-green-bright:#18D487;
+    --hana-green-dark:#087A52;
+    --bg:#0B1110;
+    --panel:#111A17;
+    --panel-2:#16221E;
+    --border:#2A3B35;
+    --text:#F1F7F4;
+    --muted:#9EB0A9;
+}
+html, body, [data-testid="stAppViewContainer"], .stApp {
+    background:var(--bg) !important; color:var(--text) !important; min-height:100vh !important;
+}
+html, body { margin:0 !important; padding:0 !important; }
+header[data-testid="stHeader"] { display:none !important; height:0 !important; }
+[data-testid="stToolbar"], [data-testid="stAppToolbar"], [data-testid="stDecoration"], #MainMenu, footer,
+.viewerBadge_container__1QSob { display:none !important; }
+[data-testid="stAppViewContainer"] > .main { min-height:100vh !important; padding-top:0 !important; }
+.main .block-container, [data-testid="stMainBlockContainer"] {
+    max-width:100% !important; min-height:100vh !important; padding:.45rem .75rem .65rem .75rem !important;
+}
+section[data-testid="stSidebar"] {
+    background:#0E1714 !important; border-right:1px solid #274039 !important; top:0 !important; height:100vh !important;
+}
+section[data-testid="stSidebar"] > div { height:100vh !important; padding-top:.35rem !important; }
+section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 {
+    color:#EAF7F1 !important;
+}
+section[data-testid="stSidebar"] hr { border-color:#263B34 !important; }
+.title {
+    background:linear-gradient(90deg,#0E211A 0%,#13251F 55%,#101A17 100%);
+    border:1px solid #256E52; border-left:4px solid var(--hana-green-bright);
+    padding:11px 15px; font-size:20px; font-weight:800; color:#F4FBF8; letter-spacing:.2px;
+}
+.head {
+    background:linear-gradient(90deg,#123126 0%,#16241F 100%);
+    border:1px solid #269668; border-left:4px solid var(--hana-green-bright);
+    padding:10px 13px; font-weight:800; color:#F6FCF9;
+}
+.box {
+    background:#14201C; border:1px solid #315047; border-radius:6px; padding:9px; text-align:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.02);
+}
+.lab { color:#9FB6AD; font-size:11px; font-weight:600; }
+.val { color:#F4FAF7; font-size:16px; font-weight:800; }
+/* 입력창/셀렉트 가독성 */
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input {
+    background:#F4F7F5 !important; color:#14201C !important; border-color:#78958A !important;
+}
+[data-baseweb="input"] input, [data-baseweb="select"] input { color:#14201C !important; }
+[data-baseweb="select"] svg { fill:#28483D !important; }
+/* 버튼: 하나 그린 포인트 */
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] {
+    background:#00A968 !important; color:white !important; border:1px solid #23D18B !important; font-weight:800 !important;
+}
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background:#00BE76 !important; border-color:#52E6AA !important;
+}
+/* 슬라이더/토글 포인트 */
+[data-baseweb="slider"] [role="slider"] { background:#18D487 !important; }
+[data-testid="stToggle"] [data-checked="true"] { background:#00A968 !important; }
+/* 데이터프레임/알림 */
+[data-testid="stDataFrame"] { border:1px solid #2D4A40; border-radius:5px; overflow:hidden; }
+[data-testid="stAlert"] { border-color:#315047 !important; }
+/* 캡션과 보조 텍스트 */
+[data-testid="stCaptionContainer"], .stCaption { color:#91A79E !important; }
+/* 스크롤바 */
+::-webkit-scrollbar { width:9px; height:9px; }
+::-webkit-scrollbar-track { background:#0B1110; }
+::-webkit-scrollbar-thumb { background:#315047; border-radius:8px; }
+::-webkit-scrollbar-thumb:hover { background:#00A968; }
+
+/* ===== HTS HIGH-CONTRAST OVERRIDES ===== */
+.stApp, [data-testid="stAppViewContainer"] { background:#070B0A !important; color:#F7FFFB !important; }
+section[data-testid="stSidebar"] { background:#0A100E !important; border-right:1px solid #00B873 !important; }
+.title { background:#081611 !important; border:1px solid #00C97B !important; border-left:5px solid #20E99A !important; color:#FFFFFF !important; box-shadow:0 0 12px rgba(0,201,123,.12); }
+.head { background:#0B1A15 !important; border:1px solid #00D184 !important; border-left:5px solid #20E99A !important; color:#FFFFFF !important; }
+.box { background:#0D1512 !important; border:1px solid #34554A !important; border-top:2px solid #00B873 !important; }
+.lab { color:#AFC7BE !important; font-weight:700 !important; }
+.val { color:#FFFFFF !important; font-size:17px !important; }
+section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span { color:#DDEBE5 !important; }
+section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color:#37F0A7 !important; }
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background:#F8FFFC !important; color:#07100C !important; border:1px solid #00A968 !important; }
+[data-baseweb="select"] * { color:#07100C !important; }
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] { background:#00B873 !important; color:#001B10 !important; border:1px solid #43FFB5 !important; font-weight:900 !important; }
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { background:#24E89B !important; color:#00130C !important; }
+[data-testid="stDataFrame"] { border:1px solid #00A968 !important; }
+hr { border-color:#24453A !important; }
+
+</style>""",unsafe_allow_html=True)
+
+def secret(k):
+    try:
+        if k in st.secrets:return str(st.secrets[k]).strip()
+    except: pass
+    return os.getenv(k,"").strip()
+
+KEY,SEC=secret("KIS_APP_KEY"),secret("KIS_APP_SECRET")
+
+MASTER_URLS = {
+    "KOSPI": "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
+    "KOSDAQ": "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
+}
+
+# KIS 공식 종목 마스터 파일의 고정폭 정의.
+KOSPI_WIDTHS = [2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
+KOSPI_COLS = ['그룹코드','시가총액규모','지수업종대분류','지수업종중분류','지수업종소분류','제조업','저유동성','지배구조지수종목','KOSPI200섹터업종','KOSPI100','KOSPI50','KRX','ETP','ELW발행','KRX100','KRX자동차','KRX반도체','KRX바이오','KRX은행','SPAC','KRX에너지화학','KRX철강','단기과열','KRX미디어통신','KRX건설','Non1','KRX증권','KRX선박','KRX섹터_보험','KRX섹터_운송','SRI','기준가','매매수량단위','시간외수량단위','거래정지','정리매매','관리종목','시장경고','경고예고','불성실공시','우회상장','락구분','액면변경','증자구분','증거금비율','신용가능','신용기간','전일거래량','액면가','상장일자','상장주수','자본금','결산월','공모가','우선주','공매도과열','이상급등','KRX300','KOSPI','매출액','영업이익','경상이익','당기순이익','ROE','기준년월','시가총액','그룹사코드','회사신용한도초과','담보대출가능','대주가능']
+KOSDAQ_WIDTHS = [2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
+KOSDAQ_COLS = ['증권그룹구분코드','시가총액 규모 구분 코드 유가','지수업종 대분류 코드','지수 업종 중분류 코드','지수업종 소분류 코드','벤처기업 여부 (Y/N)','저유동성종목 여부','KRX 종목 여부','ETP 상품구분코드','KRX100 종목 여부 (Y/N)','KRX 자동차 여부','KRX 반도체 여부','KRX 바이오 여부','KRX 은행 여부','기업인수목적회사여부','KRX 에너지 화학 여부','KRX 철강 여부','단기과열종목구분코드','KRX 미디어 통신 여부','KRX 건설 여부','(코스닥)투자주의환기종목여부','KRX 증권 구분','KRX 선박 구분','KRX섹터지수 보험여부','KRX섹터지수 운송여부','KOSDAQ150지수여부 (Y,N)','주식 기준가','정규 시장 매매 수량 단위','시간외 시장 매매 수량 단위','거래정지 여부','정리매매 여부','관리 종목 여부','시장 경고 구분 코드','시장 경고위험 예고 여부','불성실 공시 여부','우회 상장 여부','락구분 코드','액면가 변경 구분 코드','증자 구분 코드','증거금 비율','신용주문 가능 여부','신용기간','전일 거래량','주식 액면가','주식 상장 일자','상장 주수(천)','자본금','결산 월','공모 가격','우선주 구분 코드','공매도과열종목여부','이상급등종목여부','KRX300 종목 여부 (Y/N)','매출액','영업이익','경상이익','단기순이익','ROE(자기자본이익률)','기준년월','전일기준 시가총액 (억)','그룹사 코드','회사신용한도초과여부','담보대출가능여부','대주가능여부']
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_stock_master():
+    """KIS 공식 KOSPI/KOSDAQ 마스터에서 종목명 + ROE + 전일거래량을 읽는다."""
+    frames=[]
+    for market,url in MASTER_URLS.items():
+        r=requests.get(url,timeout=20); r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            mst_name=next(n for n in zf.namelist() if n.lower().endswith('.mst'))
+            text=zf.read(mst_name).decode('cp949',errors='replace')
+        suffix_len=228 if market=='KOSPI' else 222
+        widths=KOSPI_WIDTHS if market=='KOSPI' else KOSDAQ_WIDTHS
+        cols=KOSPI_COLS if market=='KOSPI' else KOSDAQ_COLS
+        items=[]; suffixes=[]
+        for row in text.splitlines():
+            if len(row)<=suffix_len: continue
+            prefix=row[:-suffix_len]; suffix=row[-suffix_len:]
+            short_code=prefix[:9].strip(); std_code=prefix[9:21].strip(); stock_name=prefix[21:].strip()
+            code=short_code[-6:] if len(short_code)>=6 else short_code.zfill(6)
+            if len(code)==6 and code.isdigit() and stock_name:
+                items.append({'code':code,'name':stock_name,'market':market,'std_code':std_code})
+                suffixes.append(suffix)
+        if not items: continue
+        meta=pd.read_fwf(io.StringIO('\n'.join(suffixes)),widths=widths,names=cols,dtype=str)
+        base=pd.DataFrame(items).reset_index(drop=True)
+        if market=='KOSPI':
+            base['roe']=pd.to_numeric(meta['ROE'],errors='coerce')
+            base['prev_volume']=pd.to_numeric(meta['전일거래량'],errors='coerce')
+            base['master_cap']=pd.to_numeric(meta['시가총액'],errors='coerce')
+        else:
+            base['roe']=pd.to_numeric(meta['ROE(자기자본이익률)'],errors='coerce')
+            base['prev_volume']=pd.to_numeric(meta['전일 거래량'],errors='coerce')
+            base['master_cap']=pd.to_numeric(meta['전일기준 시가총액 (억)'],errors='coerce')
+        frames.append(base)
+    if not frames:
+        return pd.DataFrame(columns=['code','name','market','std_code','roe','prev_volume','master_cap'])
+    master=pd.concat(frames,ignore_index=True)
+    return master.drop_duplicates(subset=['code','market']).sort_values(['name','code']).reset_index(drop=True)
+
+def num(v):
+    try:return float(str(v or 0).replace(",",""))
+    except:return 0.0
+
+class KIS:
+    def __init__(self,k,s,paper=False):
+        self.k,self.s=k,s; self.base=PAPER_URL if paper else REAL_URL; self.token=""
+    def auth(self):
+        r=requests.post(self.base+"/oauth2/tokenP",json={"grant_type":"client_credentials","appkey":self.k,"appsecret":self.s},timeout=15)
+        d=r.json()
+        if not r.ok or not d.get("access_token"):raise RuntimeError(d.get("error_description") or d.get("msg1") or r.text[:250])
+        self.token=d["access_token"]
+    def get(self,path,tr,params):
+        if not self.token:self.auth()
+        h={"content-type":"application/json; charset=utf-8","authorization":f"Bearer {self.token}",
+           "appkey":self.k,"appsecret":self.s,"tr_id":tr,"custtype":"P"}
+        r=requests.get(self.base+path,headers=h,params=params,timeout=15)
+        try:d=r.json()
+        except:raise RuntimeError(r.text[:250])
+        if d.get("msg_cd")=="EGW00123":
+            self.auth(); h["authorization"]=f"Bearer {self.token}"
+            d=requests.get(self.base+path,headers=h,params=params,timeout=15).json()
+        if str(d.get("rt_cd","0"))!="0":raise RuntimeError(f"{d.get('msg_cd','')} {d.get('msg1','API 오류')}")
+        return d
+    def price(self,c):
+        return self.get("/uapi/domestic-stock/v1/quotations/inquire-price","FHKST01010100",
+                        {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",{})
+    def chart(self,c,p):
+        end=datetime.now(); start=end-timedelta(days={"D":365,"W":1095,"M":2920}[p])
+        return self.get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",
+          {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c,"FID_INPUT_DATE_1":start.strftime("%Y%m%d"),
+           "FID_INPUT_DATE_2":end.strftime("%Y%m%d"),"FID_PERIOD_DIV_CODE":p,"FID_ORG_ADJ_PRC":"0"}).get("output2",[])
+    def scan(self,mkt,cnt,lo,hi,vol,r1,r2):
+        return self.get("/uapi/domestic-stock/v1/ranking/fluctuation","FHPST01700000",
+          {"FID_COND_MRKT_DIV_CODE":"J","FID_COND_SCR_DIV_CODE":"20170","FID_INPUT_ISCD":mkt,
+           "FID_RANK_SORT_CLS_CODE":"0","FID_INPUT_CNT_1":str(cnt),"FID_PRC_CLS_CODE":"0",
+           "FID_INPUT_PRICE_1":str(lo or ""),"FID_INPUT_PRICE_2":str(hi or ""),"FID_VOL_CNT":str(vol or ""),
+           "FID_TRGT_CLS_CODE":"0","FID_TRGT_EXLS_CLS_CODE":"0","FID_DIV_CLS_CODE":"0",
+           "FID_RSFL_RATE1":str(r1),"FID_RSFL_RATE2":str(r2)}).get("output",[])
+
+@st.cache_resource(show_spinner=False)
+def client(k,s,p):
+    x=KIS(k,s,p);x.auth();return x
+@st.cache_data(ttl=10,show_spinner=False)
+def price(k,s,p,c):return client(k,s,p).price(c)
+@st.cache_data(ttl=60,show_spinner=False)
+def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
+@st.cache_data(ttl=20,show_spinner=False)
+def scan(k,s,p,m,c,lo,hi,v,r1,r2):return client(k,s,p).scan(m,c,lo,hi,v,r1,r2)
+
+def chartdf(rows):
+    if not rows:return pd.DataFrame()
+    d=pd.DataFrame(rows).rename(columns={"stck_bsop_date":"date","stck_oprc":"open","stck_hgpr":"high",
+      "stck_lwpr":"low","stck_clpr":"close","acml_vol":"volume"})
+    need=["date","open","high","low","close","volume"]
+    if not all(x in d for x in need):return pd.DataFrame()
+    d["date"]=pd.to_datetime(d["date"],format="%Y%m%d",errors="coerce")
+    for x in need[1:]:d[x]=pd.to_numeric(d[x],errors="coerce")
+    d=d.dropna().sort_values("date")
+    for n in [5,20,60,120]:d[f"MA{n}"]=d["close"].rolling(n).mean()
+    return d
+
+def in_range(value, low, high, enabled=True):
+    if not enabled: return True
+    if value is None or pd.isna(value): return False
+    return float(low) <= float(value) <= float(high)
+
+def ma_match(d, condition):
+    if condition == "사용 안 함": return True
+    if d is None or d.empty or len(d) < 60: return False
+    last=d.iloc[-1]
+    if condition == "정배열 (5>20>60)":
+        return pd.notna(last['MA60']) and last['MA5'] > last['MA20'] > last['MA60']
+    if condition == "역배열 (5<20<60)":
+        return pd.notna(last['MA60']) and last['MA5'] < last['MA20'] < last['MA60']
+    if len(d) < 21: return False
+    prev=d.iloc[-2]
+    if condition == "5/20 골든크로스":
+        return pd.notna(prev['MA20']) and prev['MA5'] <= prev['MA20'] and last['MA5'] > last['MA20']
+    if condition == "5/20 데드크로스":
+        return pd.notna(prev['MA20']) and prev['MA5'] >= prev['MA20'] and last['MA5'] < last['MA20']
+    if condition == "20/60 골든크로스":
+        return pd.notna(prev['MA60']) and prev['MA20'] <= prev['MA60'] and last['MA20'] > last['MA60']
+    return True
+
+def pro_filter_candidates(k,s,paper,base_rows,master,settings):
+    """등락률 순위 후보를 KIS 현재가 + 마스터 ROE + 일봉으로 2차 필터링."""
+    if not base_rows: return []
+    mlookup=master.drop_duplicates('code').set_index('code') if not master.empty else pd.DataFrame()
+    out=[]
+    for i,row in enumerate(base_rows):
+        code=str(row.get('mksc_shrn_iscd') or row.get('stck_shrn_iscd') or '').zfill(6)
+        if len(code)!=6: continue
+        try:
+            q=price(k,s,paper,code)
+            cur=num(q.get('stck_prpr')); turnover=num(q.get('acml_tr_pbmn'))/1e8
+            cap=num(q.get('hts_avls')); per=num(q.get('per'))
+            high250=num(q.get('d250_hgpr'))
+            near_pct=((high250-cur)/high250*100) if high250>0 and cur>0 else None
+            roe=None; prev_vol=None; market=''
+            if not mlookup.empty and code in mlookup.index:
+                mr=mlookup.loc[code]
+                if isinstance(mr,pd.DataFrame): mr=mr.iloc[0]
+                roe=pd.to_numeric(mr.get('roe'),errors='coerce')
+                prev_vol=pd.to_numeric(mr.get('prev_volume'),errors='coerce')
+                market=str(mr.get('market',''))
+            cur_vol=num(q.get('acml_vol'))
+            surge=(cur_vol/float(prev_vol)*100) if prev_vol is not None and pd.notna(prev_vol) and float(prev_vol)>0 else None
+            if settings['market']!='전체' and market and market!=settings['market']: continue
+            if settings['turnover_on'] and turnover < settings['turnover_min']: continue
+            if settings['cap_on'] and not in_range(cap,settings['cap_min'],settings['cap_max']): continue
+            if settings['surge_on'] and (surge is None or surge < settings['surge_min']): continue
+            if settings['high_on'] and (near_pct is None or near_pct > settings['high_near']): continue
+            if settings['per_on'] and not in_range(per,settings['per_min'],settings['per_max']): continue
+            if settings['roe_on'] and not in_range(roe,settings['roe_min'],settings['roe_max']): continue
+            d=None
+            if settings['ma_condition']!='사용 안 함':
+                d=chartdf(chart(k,s,paper,code,'D'))
+                if not ma_match(d,settings['ma_condition']): continue
+            enriched=dict(row)
+            enriched.update({'_code':code,'_per':per,'_roe':roe,'_turnover_100m':turnover,'_cap_100m':cap,
+                             '_surge_pct':surge,'_near_high_pct':near_pct})
+            out.append(enriched)
+            if len(out)>=settings['result_count']: break
+            time.sleep(0.04)
+        except Exception:
+            continue
+    return out
+
+def fig(d,n,c):
+    """HTS형 가격 + 거래량 차트. Plotly subplot을 명시적으로 구성한다."""
+    if d is None or d.empty:
+        return None
+
+    f = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.015,
+        row_heights=[0.78, 0.22]
+    )
+
+    f.add_trace(go.Candlestick(
+        x=d["date"], open=d["open"], high=d["high"], low=d["low"], close=d["close"],
+        name="가격",
+        increasing_line_color="#FF4D5A", increasing_fillcolor="#FF4D5A",
+        decreasing_line_color="#3D8BFF", decreasing_fillcolor="#3D8BFF"
+    ), row=1, col=1)
+
+    ma_colors = {"MA5":"#21E6A1", "MA20":"#F4F4F4", "MA60":"#FFD54A", "MA120":"#D98CFF"}
+    for ma, color in ma_colors.items():
+        if ma in d.columns:
+            f.add_trace(go.Scatter(
+                x=d["date"], y=d[ma], name=ma, mode="lines",
+                line=dict(color=color, width=1.5), connectgaps=False
+            ), row=1, col=1)
+
+    volume_colors = ["#FF4D5A" if cl >= op else "#3D8BFF" for op, cl in zip(d["open"], d["close"])]
+    f.add_trace(go.Bar(
+        x=d["date"], y=d["volume"], name="거래량",
+        marker=dict(color=volume_colors, line=dict(width=0)), opacity=0.85,
+        hovertemplate="%{x|%Y-%m-%d}<br>거래량 %{y:,.0f}<extra></extra>"
+    ), row=2, col=1)
+
+    f.update_layout(
+        title=dict(text=f"{n} | {c}", font=dict(size=16, color="#FFFFFF"), x=0.01),
+        height=700,
+        autosize=True,
+        paper_bgcolor="#080D0B",
+        plot_bgcolor="#080D0B",
+        font=dict(color="#DCEAE4", size=12),
+        margin=dict(l=8, r=12, t=48, b=8),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#101A16", bordercolor="#00C97B", font_color="#FFFFFF"),
+        legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"),
+        bargap=0.08,
+        dragmode="pan"
+    )
+    f.update_xaxes(
+        rangeslider_visible=False,
+        gridcolor="#1D302A", zeroline=False,
+        showspikes=True, spikecolor="#00C97B", spikethickness=1,
+        spikemode="across", spikesnap="cursor",
+        tickfont=dict(color="#AFC7BE")
+    )
+    f.update_yaxes(
+        side="right", gridcolor="#1D302A", zeroline=False,
+        tickfont=dict(color="#CFE0D9"), fixedrange=False,
+        row=1, col=1
+    )
+    f.update_yaxes(
+        side="right", gridcolor="#16251F", zeroline=False,
+        tickfont=dict(color="#9FB7AE"), title_text="거래량",
+        row=2, col=1
+    )
+    return f
+
+st.markdown('<div class="title">HanaV Trading · 한국투자증권 KIS Open API</div>',unsafe_allow_html=True)
+
+if not KEY or not SEC:
+    st.error("KIS_APP_KEY / KIS_APP_SECRET이 설정되지 않았습니다.")
+    st.code('$env:KIS_APP_KEY="본인의_APP_KEY"\n$env:KIS_APP_SECRET="본인의_APP_SECRET"\nstreamlit run app.py',language="powershell")
+    st.warning("키 값은 채팅에 보내지 마세요.")
+    st.stop()
+
+with st.sidebar:
+    st.header("HanaV Trading")
+    paper=st.toggle("모의투자 API",False)
+    st.caption("현재 버전은 시세 조회/분석용입니다.")
+    st.divider()
+    st.subheader("전체 종목 검색")
+    search_market = st.selectbox("검색 시장", ["전체", "KOSPI", "KOSDAQ"], key="stock_search_market")
+    q=st.text_input("종목명 또는 6자리 코드","삼성전자").strip()
+
+    try:
+        master = load_stock_master()
+    except Exception as e:
+        st.error(f"종목 마스터 다운로드 오류: {e}")
+        master = pd.DataFrame([{"code":"005930","name":"삼성전자","market":"KOSPI","std_code":""}])
+
+    search_df = master
+    if search_market != "전체":
+        search_df = search_df[search_df["market"] == search_market]
+
+    if q:
+        q_lower = q.lower()
+        mask = (
+            search_df["code"].astype(str).str.contains(q, regex=False) |
+            search_df["name"].astype(str).str.lower().str.contains(q_lower, regex=False)
+        )
+        hits_df = search_df[mask].copy()
+        # 정확한 코드/종목명을 먼저 표시
+        hits_df["_exact"] = ((hits_df["code"] == q) | (hits_df["name"].str.lower() == q_lower)).astype(int)
+        hits_df = hits_df.sort_values(["_exact", "name"], ascending=[False, True]).head(100)
+    else:
+        hits_df = search_df.head(100).copy()
+
+    if hits_df.empty:
+        st.warning("검색 결과가 없습니다.")
+        fallback = master[master["code"] == "005930"]
+        hits_df = fallback if not fallback.empty else master.head(1)
+
+    options = [f"{r.code} | {r.name} | {r.market}" for r in hits_df.itertuples()]
+    pick=st.selectbox("검색 결과", options)
+    selected = pick.split(" | ")
+    code, name = selected[0].strip(), selected[1].strip()
+    st.caption(f"전체 종목 {len(master):,}개 로드 · 검색 결과 {len(hits_df):,}개")
+    st.divider()
+    st.subheader("조건검색 PRO")
+    market=st.selectbox("시장",["전체","KOSPI","KOSDAQ"])
+    mcode={"전체":"0000","KOSPI":"0001","KOSDAQ":"1001"}[market]
+    a,b=st.columns(2)
+    with a:
+        r1=st.number_input("최소 등락률 %",value=0.0,step=.5)
+        lo=st.number_input("최저 가격",value=0,step=100)
+    with b:
+        r2=st.number_input("최대 등락률 %",value=30.0,step=.5)
+        hi=st.number_input("최고 가격",value=1000000,step=1000)
+    vol=st.number_input("최소 거래량",value=0,step=10000)
+
+    st.markdown("##### PRO 필터")
+    turnover_on=st.checkbox("거래대금",False)
+    turnover_min=st.number_input("최소 거래대금 (억원)",0.0,1000000.0,100.0,50.0,disabled=not turnover_on)
+    cap_on=st.checkbox("시가총액",False)
+    c1,c2=st.columns(2)
+    with c1: cap_min=st.number_input("시총 최소(억원)",0.0,100000000.0,0.0,1000.0,disabled=not cap_on)
+    with c2: cap_max=st.number_input("시총 최대(억원)",0.0,100000000.0,100000000.0,1000.0,disabled=not cap_on)
+    surge_on=st.checkbox("거래량 급증",False)
+    surge_min=st.number_input("전일 거래량 대비 최소 %",0.0,10000.0,150.0,10.0,disabled=not surge_on,
+                              help="현재 누적거래량 ÷ 종목 마스터의 전일거래량 × 100")
+    high_on=st.checkbox("250일 신고가 근접",False)
+    high_near=st.number_input("최고가와 최대 거리 %",0.0,100.0,5.0,0.5,disabled=not high_on,
+                              help="예: 5% = 현재가가 250일 최고가에서 5% 이내")
+    ma_condition=st.selectbox("이평선 조건",["사용 안 함","정배열 (5>20>60)","역배열 (5<20<60)","5/20 골든크로스","5/20 데드크로스","20/60 골든크로스"])
+    per_on=st.checkbox("PER",False)
+    p1,p2=st.columns(2)
+    with p1: per_min=st.number_input("PER 최소",-1000.0,10000.0,0.0,1.0,disabled=not per_on)
+    with p2: per_max=st.number_input("PER 최대",-1000.0,10000.0,30.0,1.0,disabled=not per_on)
+    roe_on=st.checkbox("ROE",False)
+    o1,o2=st.columns(2)
+    with o1: roe_min=st.number_input("ROE 최소 %",-1000.0,1000.0,0.0,1.0,disabled=not roe_on)
+    with o2: roe_max=st.number_input("ROE 최대 %",-1000.0,1000.0,100.0,1.0,disabled=not roe_on)
+    candidate_count=st.slider("1차 후보 수",10,50,40,5,help="KIS 등락률 순위에서 먼저 가져올 후보 수")
+    result_count=st.slider("최종 결과 수",5,30,20,5)
+    run_scan=st.button("조건검색 PRO 실행",type="primary",use_container_width=True)
+
+try:client(KEY,SEC,paper)
+except Exception as e:
+    st.error(f"KIS 인증 실패: {e}");st.stop()
+
+if run_scan:
+    try:
+        settings={
+            'market':market,'turnover_on':turnover_on,'turnover_min':turnover_min,
+            'cap_on':cap_on,'cap_min':cap_min,'cap_max':cap_max,
+            'surge_on':surge_on,'surge_min':surge_min,'high_on':high_on,'high_near':high_near,
+            'ma_condition':ma_condition,'per_on':per_on,'per_min':per_min,'per_max':per_max,
+            'roe_on':roe_on,'roe_min':roe_min,'roe_max':roe_max,'result_count':result_count
+        }
+        with st.spinner("조건검색 PRO 분석 중 · 후보 종목의 PER/ROE/시총/기술조건을 확인하고 있습니다..."):
+            base=scan(KEY,SEC,paper,mcode,candidate_count,lo,hi,vol,r1,r2)
+            st.session_state.rows=pro_filter_candidates(KEY,SEC,paper,base,master,settings)
+        st.session_state.pop("matches_table",None)
+        st.session_state.pro_candidate_count=len(base)
+    except Exception as e:
+        st.error(f"조건검색 PRO 오류: {e}")
+rows=st.session_state.get("rows",[])
+rd=pd.DataFrame(rows) if rows else pd.DataFrame()
+
+left,right=st.columns([1.15,4.2],gap="small")
+with left:
+    st.markdown("### MATCHES")
+    if not rd.empty:
+        cc=next((x for x in ["_code","mksc_shrn_iscd","stck_shrn_iscd"] if x in rd),None)
+        nc=next((x for x in ["hts_kor_isnm","prdt_name"] if x in rd),None)
+        colmap={cc:"코드",nc:"종목명","stck_prpr":"현재가","prdy_ctrt":"등락률","acml_vol":"거래량",
+                "_turnover_100m":"거래대금(억)","_cap_100m":"시총(억)","_per":"PER","_roe":"ROE",
+                "_surge_pct":"거래량비%","_near_high_pct":"신고가거리%"}
+        cols=[x for x in colmap if x and x in rd.columns]
+        v=rd[cols].copy().rename(columns={x:colmap[x] for x in cols})
+        for x in ["거래대금(억)","시총(억)","PER","ROE","거래량비%","신고가거리%"]:
+            if x in v.columns: v[x]=pd.to_numeric(v[x],errors="coerce").round(2)
+        # 표의 행을 클릭하면 해당 종목을 오른쪽 차트에 즉시 반영합니다.
+        event = st.dataframe(
+            v, hide_index=True, use_container_width=True, height=520,
+            on_select="rerun", selection_mode="single-row", key="matches_table"
+        )
+        if cc and nc:
+            selected_rows = []
+            try:
+                selected_rows = event.selection.rows
+            except Exception:
+                pass
+            if selected_rows:
+                idx = int(selected_rows[0])
+                if 0 <= idx < len(rd):
+                    chosen = rd.iloc[idx]
+                    code = str(chosen[cc]).zfill(6)
+                    name = str(chosen[nc])
+            else:
+                # 클릭 전에는 첫 번째 검색 결과를 기본 차트 종목으로 사용합니다.
+                chosen = rd.iloc[0]
+                code = str(chosen[cc]).zfill(6)
+                name = str(chosen[nc])
+        st.caption(f"1차 후보 {st.session_state.get('pro_candidate_count', len(rd))}개 → 최종 {len(rd)}개 · 행 클릭 시 오른쪽 차트 변경")
+    else:st.info("조건검색 PRO를 실행하면 결과가 표시됩니다. 필터를 너무 많이 켜면 결과가 0개일 수 있습니다.")
+
+with right:
+    try:qv=price(KEY,SEC,paper,code)
+    except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
+    api_name=qv.get("hts_kor_isnm") or qv.get("prdt_name") or name
+    cur,rate,volume,value,cap=[num(qv.get(x)) for x in ["stck_prpr","prdy_ctrt","acml_vol","acml_tr_pbmn","hts_avls"]]
+    st.markdown(f'<div class="head">{api_name} | {code}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
+    cs=st.columns(5)
+    vals=[("현재가",f"{cur:,.0f}"),("등락률",f"{rate:+.2f}%"),("거래량",f"{volume:,.0f}"),
+          ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
+    for c,(l,v) in zip(cs,vals):
+        with c:st.markdown(f'<div class="box"><div class="lab">{l}</div><div class="val">{v}</div></div>',unsafe_allow_html=True)
+    st.write("")
+    pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
+    per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
+    try:
+        raw_chart = chart(KEY,SEC,paper,code,per)
+        d = chartdf(raw_chart)
+        if d.empty:
+            st.warning("차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
+        else:
+            chart_fig = fig(d, api_name, code)
+            st.plotly_chart(
+                chart_fig,
+                use_container_width=True,
+                theme=None,
+                key=f"price_volume_{code}_{per}",
+                config={
+                    "displaylogo":False,
+                    "scrollZoom":True,
+                    "responsive":True,
+                    "modeBarButtonsToRemove":["lasso2d","select2d"]
+                }
+            )
+    except Exception as e:st.error(f"차트 조회 오류: {e}")
+
+st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · 주문/자동매매 미포함")
