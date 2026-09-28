@@ -8,6 +8,7 @@ from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 import time
+import re
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
 
@@ -311,122 +312,197 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
             continue
     return out
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def naver_fundamental_2025_2028(code):
-    """네이버 증권 종목분석이 연결하는 WiseReport v3 Financial Summary에서
-    2025~2028 연간 영업이익(발표기준)/EPS/PER/ROE를 읽는다.
+    """Naver/WiseReport Financial Summary annual data for 2025~2028.
 
-    주의: 공식 Open API가 아닌 공개 HTML 화면 기반이므로 페이지 구조가 바뀌면
-    파서를 수정해야 한다. 대량 수집이 아니라 사용자가 선택한 1개 종목만 조회한다.
+    Flow:
+      1) Open WiseReport v2 company overview page for the selected code.
+      2) Extract the fresh encparam/id generated for that company page.
+      3) Call cF1001.aspx AJAX Financial Summary.
+      4) Extract Operating profit (reported basis preferred), EPS, PER and ROE.
+
+    This is a public-web HTML integration, not an official Open API. If the provider
+    changes the HTML/AJAX contract this parser may need an update.
     """
-    code=str(code).zfill(6)
-    url="https://navercomp.wisereport.co.kr/v3/company/c1010001.aspx"
-    headers={
-        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
-        "Referer":f"https://stock.naver.com/domestic/stock/{code}/info/company",
-        "Accept-Language":"ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.5",
-    }
-    r=requests.get(url,params={"cmp_cd":code},headers=headers,timeout=20,allow_redirects=False)
-    if r.status_code != 200:
-        raise RuntimeError(f"네이버 기업분석 페이지 HTTP {r.status_code}")
-    if len(r.content) > 5*1024*1024:
-        raise RuntimeError("네이버 기업분석 응답이 예상보다 큽니다.")
-    r.encoding=r.apparent_encoding or "utf-8"
+    code = str(code).zfill(6)
+    base = "https://navercomp.wisereport.co.kr/v2"
+    parent_url = f"{base}/company/c1010001.aspx"
+    ajax_url = f"{base}/company/ajax/cF1001.aspx"
 
-    try:
-        tables=pd.read_html(io.StringIO(r.text))
-    except Exception as e:
-        raise RuntimeError(f"Financial Summary 표 파싱 실패: {e}")
+    sess = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.5",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    parent = sess.get(parent_url, params={"cmp_cd": code, "cn": ""}, headers=headers, timeout=20)
+    parent.raise_for_status()
+    parent.encoding = parent.apparent_encoding or "utf-8"
+    html = parent.text
+
+    # WiseReport creates these values on the parent page. Do not hard-code them.
+    enc_patterns = [
+        r"encparam\s*:\s*['\"]([^'\"]+)['\"]",
+        r"encparam\s*=\s*['\"]([^'\"]+)['\"]",
+        r"['\"]encparam['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+    ]
+    id_patterns = [
+        r"\bid\s*:\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
+        r"\bid\s*=\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
+        r"['\"]id['\"]\s*:\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
+    ]
+    def first_match(patterns, text):
+        for pat in patterns:
+            m = re.search(pat, text, re.I)
+            if m:
+                return m.group(1)
+        return None
+
+    encparam = first_match(enc_patterns, html)
+    encid = first_match(id_patterns, html)
+    if not encparam or not encid:
+        raise RuntimeError("WiseReport 종목별 인증 파라미터(encparam/id)를 찾지 못했습니다.")
+
+    ajax_headers = {
+        **headers,
+        "Referer": parent.url,
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "text/html, */*; q=0.01",
+    }
 
     def clean(x):
-        return str(x).replace("\xa0"," ").replace("\n"," ").strip()
+        return re.sub(r"\s+", " ", str(x).replace("\xa0", " ")).strip()
 
-    def flatten_columns(df):
-        if isinstance(df.columns,pd.MultiIndex):
-            cols=[]
-            for col in df.columns:
-                parts=[]
-                for x in col:
-                    t=clean(x)
-                    if t and not t.lower().startswith("unnamed") and t not in parts:
-                        parts.append(t)
-                cols.append(" ".join(parts))
-            df=df.copy(); df.columns=cols
-        else:
-            df=df.copy(); df.columns=[clean(x) for x in df.columns]
-        return df
+    def flatten_col(col):
+        if isinstance(col, tuple):
+            parts=[]
+            for x in col:
+                z=clean(x)
+                if z and not z.lower().startswith("unnamed") and z not in parts:
+                    parts.append(z)
+            return " ".join(parts)
+        return clean(col)
 
+    def fetch_summary(freq_typ):
+        params = {
+            "cmp_cd": code,
+            "fin_typ": "0",       # 주재무제표
+            "freq_typ": freq_typ, # Y=annual; A is fallback for some layouts
+            "encparam": encparam,
+            "id": encid,
+        }
+        rr = sess.get(ajax_url, params=params, headers=ajax_headers, timeout=20)
+        rr.raise_for_status()
+        rr.encoding = rr.apparent_encoding or "utf-8"
+        if len(rr.text.strip()) < 100:
+            raise RuntimeError(f"Financial Summary 응답이 비어 있습니다. (freq={freq_typ})")
+        try:
+            tabs = pd.read_html(io.StringIO(rr.text))
+        except Exception as e:
+            raise RuntimeError(f"Financial Summary HTML 파싱 실패 (freq={freq_typ}): {e}")
+        return tabs
+
+    tables=[]
+    errors=[]
+    for freq in ("Y", "A"):
+        try:
+            tables.extend(fetch_summary(freq))
+            if tables:
+                break
+        except Exception as e:
+            errors.append(str(e))
+    if not tables:
+        raise RuntimeError("Financial Summary AJAX 조회 실패: " + " / ".join(errors[-2:]))
+
+    # Pick the table containing the four target metrics and annual year headers.
     candidates=[]
     for t in tables:
-        if t is None or t.empty: continue
-        d=flatten_columns(t)
-        blob=" ".join(map(clean,d.columns)) + " " + " ".join(clean(x) for x in d.astype(str).values.ravel()[:3000])
-        score=sum(k in blob for k in ["영업이익","EPS","PER","ROE"]) + sum(str(y) in blob for y in [2025,2026,2027,2028])
-        if score>=6: candidates.append((score,d))
-    if not candidates:
-        raise RuntimeError("Financial Summary 표를 찾지 못했습니다. 네이버 화면 구조가 변경되었을 수 있습니다.")
-    d=max(candidates,key=lambda x:x[0])[1]
+        if t is None or t.empty:
+            continue
+        d=t.copy()
+        d.columns=[flatten_col(c) for c in d.columns]
+        blob=(" ".join(d.columns)+" "+" ".join(clean(x) for x in d.astype(str).values.ravel()[:5000])).upper()
+        metric_score=sum(k in blob for k in ["영업이익","EPS","PER","ROE"])
+        year_score=sum(str(y) in blob for y in [2025,2026,2027,2028])
+        candidates.append((metric_score*10+year_score,d))
+    candidates.sort(key=lambda x:x[0], reverse=True)
+    if not candidates or candidates[0][0] < 30:
+        raise RuntimeError("Financial Summary 표에서 영업이익/EPS/PER/ROE를 찾지 못했습니다.")
+    d=candidates[0][1]
 
-    # 연도별 열 찾기. 헤더가 행 안에 들어온 경우도 지원하기 위해 첫 4개 행을 보조 헤더로 사용.
-    col_year={}
+    # Identify year columns from the flattened MultiIndex header.  A header such as
+    # '연간 2026/12(E) (IFRS연결)' maps to 2026.
+    year_cols={}
     for c in d.columns:
-        m=__import__('re').search(r'(2025|2026|2027|2028)',clean(c))
-        if m: col_year[c]=int(m.group(1))
-    if len(col_year)<3:
-        for ridx in range(min(4,len(d))):
+        m=re.search(r"(2025|2026|2027|2028)\s*[/.-]?\s*\d{0,2}", clean(c))
+        if m:
+            year_cols[int(m.group(1))]=c
+    # Some pandas versions keep the period labels in the first data row.
+    if len(year_cols)<2:
+        for ridx in range(min(3,len(d))):
             for c in d.columns:
-                m=__import__('re').search(r'(2025|2026|2027|2028)',clean(d.iloc[ridx][c]))
-                if m: col_year[c]=int(m.group(1))
-    if not col_year:
-        raise RuntimeError("2025~2028 연도 열을 찾지 못했습니다.")
+                m=re.search(r"(2025|2026|2027|2028)\s*[/.-]?\s*\d{0,2}", clean(d.iloc[ridx][c]))
+                if m:
+                    year_cols[int(m.group(1))]=c
+    if not year_cols:
+        raise RuntimeError("Financial Summary에서 2025~2028 연간 열을 찾지 못했습니다.")
 
-    def parse_num(v):
-        s=clean(v).replace(",","").replace("원","").replace("배","").replace("%","")
-        if s in ("","-","--","nan","None"): return float('nan')
-        # 괄호 음수도 처리
-        neg=s.startswith("(") and s.endswith(")")
-        s=s.strip("()")
-        try:
-            x=float(s)
-            return -x if neg else x
-        except: return float('nan')
-
-    # 행 이름은 첫 3개 열까지 합쳐 검색. '영업이익(발표기준)'을 일반 영업이익보다 우선한다.
-    labels=[]
+    # The first column is normally 주요재무정보.  Search every cell in the first
+    # few columns so minor layout changes do not break the row lookup.
+    search_cols=list(d.columns)[:min(3,len(d.columns))]
+    row_labels=[]
     for idx,row in d.iterrows():
-        first=list(d.columns)[:min(3,len(d.columns))]
-        labels.append((idx," ".join(clean(row[c]) for c in first)))
+        label=" ".join(clean(row[c]) for c in search_cols)
+        row_labels.append((idx,label))
 
-    def find_row(metric):
+    def find_metric_row(metric):
+        normalized=[(idx,re.sub(r"\s+","",lab).upper()) for idx,lab in row_labels]
         if metric=="영업이익":
-            preferred=[x for x in labels if "영업이익(발표기준)" in x[1].replace(" ","")]
-            if preferred:return preferred[0][0]
-            exact=[x for x in labels if x[1].replace(" ","").startswith("영업이익") and "률" not in x[1]]
-            return exact[0][0] if exact else None
-        keys={"EPS":["EPS(원)","EPS"],"PER":["PER(배)","PER"],"ROE":["ROE(%)","ROE"]}[metric]
-        for k in keys:
-            for idx,label in labels:
-                z=label.replace(" ","").upper()
-                if k.replace(" ","").upper() in z:
+            # Naver Financial Summary shows a separate 발표기준 row when consensus exists.
+            for idx,lab in normalized:
+                if "영업이익(발표기준)" in lab:
+                    return idx
+            for idx,lab in normalized:
+                if "영업이익" in lab and "영업이익률" not in lab:
+                    return idx
+        targets={"EPS":["EPS(원)","EPS"],"PER":["PER(배)","PER"],"ROE":["ROE(%)","ROE"]}[metric]
+        for target in targets:
+            z=target.replace(" ","").upper()
+            for idx,lab in normalized:
+                if z in lab:
                     return idx
         return None
 
-    metric_rows={m:find_row(m) for m in ["영업이익","EPS","PER","ROE"]}
-    if metric_rows["영업이익"] is None or metric_rows["EPS"] is None:
-        raise RuntimeError("영업이익/EPS 행을 찾지 못했습니다.")
+    rows={m:find_metric_row(m) for m in ["영업이익","EPS","PER","ROE"]}
+    if rows["영업이익"] is None or rows["EPS"] is None:
+        raise RuntimeError("Financial Summary에서 영업이익 또는 EPS 행을 찾지 못했습니다.")
+
+    def parse_num(v):
+        z=clean(v).replace(",","").replace("원","").replace("배","").replace("%","")
+        z=z.replace("−","-")
+        if z.lower() in ("","-","--","nan","none","n/a"):
+            return float("nan")
+        neg=z.startswith("(") and z.endswith(")")
+        z=z.strip("()")
+        # Keep only a normal signed decimal number; footnote text is discarded.
+        m=re.search(r"[-+]?\d+(?:\.\d+)?",z)
+        if not m:
+            return float("nan")
+        val=float(m.group(0))
+        return -abs(val) if neg else val
 
     out=[]
     for year in [2025,2026,2027,2028]:
-        cols=[c for c,y in col_year.items() if y==year]
-        c=cols[-1] if cols else None
+        col=year_cols.get(year)
         rec={"연도":year,"구분":"A" if year==2025 else "E"}
-        for metric,ridx in metric_rows.items():
-            rec[metric]=parse_num(d.loc[ridx,c]) if c is not None and ridx is not None else float('nan')
+        for metric,ridx in rows.items():
+            rec[metric]=parse_num(d.loc[ridx,col]) if col is not None and ridx is not None else float("nan")
         out.append(rec)
-    df=pd.DataFrame(out)
-    if df[["영업이익","EPS","PER","ROE"]].isna().all().all():
-        raise RuntimeError("2025~2028 재무 값이 비어 있습니다.")
-    return df
+    result=pd.DataFrame(out)
+    if result[["영업이익","EPS","PER","ROE"]].isna().all().all():
+        raise RuntimeError("2025~2028 Financial Summary 값이 모두 비어 있습니다.")
+    return result
 
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
