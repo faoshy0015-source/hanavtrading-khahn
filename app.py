@@ -302,9 +302,25 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
             if settings['ma_condition']!='사용 안 함':
                 d=chartdf(chart(k,s,paper,code,'D'))
                 if not ma_match(d,settings['ma_condition']): continue
+
+            earnings_signal=''
+            earnings_score=None
+            earnings_reason=''
+            if settings.get('earnings_improve_on',False):
+                try:
+                    fdf=naver_fundamental_2025_2028(code)
+                    earnings_signal,earnings_score,earnings_reason=earnings_momentum(fdf)
+                except Exception:
+                    # 컨센서스 조회가 안 되는 종목은 '실적개선 종목만' 필터에서 제외
+                    continue
+                if earnings_signal != '📈 실적개선':
+                    continue
+
             enriched=dict(row)
             enriched.update({'_code':code,'_per':per,'_roe':roe,'_turnover_100m':turnover,'_cap_100m':cap,
-                             '_surge_pct':surge,'_near_high_pct':near_pct})
+                             '_surge_pct':surge,'_near_high_pct':near_pct,
+                             '_earnings_signal':earnings_signal,'_earnings_score':earnings_score,
+                             '_earnings_reason':earnings_reason})
             out.append(enriched)
             if len(out)>=settings['result_count']: break
             time.sleep(0.04)
@@ -504,6 +520,69 @@ def naver_fundamental_2025_2028(code):
         raise RuntimeError("2025~2028 Financial Summary 값이 모두 비어 있습니다.")
     return result
 
+def earnings_momentum(df):
+    """2025A~2028E 영업이익/EPS/PER/ROE 흐름을 정량 요약한다.
+
+    반환: (라벨, 점수, 근거문구)
+    - 영업이익/EPS 성장 방향을 가장 크게 반영
+    - ROE 개선은 보조 가점/감점
+    - PER은 이익/EPS가 성장하는 상황에서 부담 완화 여부만 보조 반영
+    """
+    if df is None or df.empty:
+        return "⚪ 데이터부족", 0, "재무 컨센서스 데이터 없음"
+    x=df.copy().sort_values('연도')
+    for c in ['영업이익','EPS','PER','ROE']:
+        x[c]=pd.to_numeric(x[c],errors='coerce')
+
+    score=0
+    reasons=[]
+
+    def direction(col, weight_up, weight_down, label):
+        nonlocal score
+        v=x[col].dropna()
+        if len(v)<2: return None
+        first,last=float(v.iloc[0]),float(v.iloc[-1])
+        if first == 0: return None
+        chg=(last-first)/abs(first)*100
+        # 작은 변동은 중립 처리
+        if chg >= 5:
+            score += weight_up
+            reasons.append(f"{label} 증가")
+            return 'up'
+        if chg <= -5:
+            score -= weight_down
+            reasons.append(f"{label} 감소")
+            return 'down'
+        reasons.append(f"{label} 보합")
+        return 'flat'
+
+    op_dir=direction('영업이익',2,2,'영업이익')
+    eps_dir=direction('EPS',2,2,'EPS')
+    roe_dir=direction('ROE',1,1,'ROE')
+
+    per=x['PER'].dropna()
+    if len(per)>=2 and op_dir=='up' and eps_dir=='up':
+        p0,p1=float(per.iloc[0]),float(per.iloc[-1])
+        if p0>0 and p1>0:
+            if p1 <= p0*0.95:
+                score += 1
+                reasons.append('Forward PER 부담 완화')
+            elif p1 >= p0*1.15:
+                score -= 1
+                reasons.append('Forward PER 상승')
+
+    # 핵심 이익지표가 서로 반대면 과도한 분류를 피한다.
+    if op_dir=='up' and eps_dir=='down': score=min(score,1)
+    if op_dir=='down' and eps_dir=='up': score=max(score,-1)
+
+    if score >= 3:
+        label='📈 실적개선'
+    elif score <= -3:
+        label='📉 실적둔화'
+    else:
+        label='➡️ 중립'
+    return label, score, ' · '.join(reasons) if reasons else '판단 데이터 부족'
+
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
     # 원 단위 → 억원
@@ -676,6 +755,10 @@ with st.sidebar:
     o1,o2=st.columns(2)
     with o1: roe_min=st.number_input("ROE 최소 %",-1000.0,1000.0,0.0,1.0,disabled=not roe_on)
     with o2: roe_max=st.number_input("ROE 최대 %",-1000.0,1000.0,100.0,1.0,disabled=not roe_on)
+    earnings_improve_on=st.checkbox(
+        "📈 실적개선 종목만", False,
+        help="WiseReport 2025A~2028E의 영업이익·EPS·PER·ROE 흐름을 종합해 '실적개선'으로 판정된 종목만 남깁니다. 컨센서스가 없는 종목은 제외됩니다."
+    )
     candidate_count=st.slider("1차 후보 수",10,50,40,5,help="KIS 등락률 순위에서 먼저 가져올 후보 수")
     result_count=st.slider("최종 결과 수",5,30,20,5)
     run_scan=st.button("조건검색 PRO 실행",type="primary",use_container_width=True)
@@ -691,9 +774,13 @@ if run_scan:
             'cap_on':cap_on,'cap_min':cap_min,'cap_max':cap_max,
             'surge_on':surge_on,'surge_min':surge_min,'high_on':high_on,'high_near':high_near,
             'ma_condition':ma_condition,'per_on':per_on,'per_min':per_min,'per_max':per_max,
-            'roe_on':roe_on,'roe_min':roe_min,'roe_max':roe_max,'result_count':result_count
+            'roe_on':roe_on,'roe_min':roe_min,'roe_max':roe_max,
+            'earnings_improve_on':earnings_improve_on,'result_count':result_count
         }
-        with st.spinner("조건검색 PRO 분석 중 · 후보 종목의 PER/ROE/시총/기술조건을 확인하고 있습니다..."):
+        spinner_text = "조건검색 PRO 분석 중 · PER/ROE/시총/기술조건을 확인하고 있습니다..."
+        if earnings_improve_on:
+            spinner_text = "조건검색 PRO 분석 중 · 1차 필터 통과 종목의 2025~2028 실적 컨센서스까지 확인하고 있습니다..."
+        with st.spinner(spinner_text):
             base=scan(KEY,SEC,paper,mcode,candidate_count,lo,hi,vol,r1,r2)
             st.session_state.rows=pro_filter_candidates(KEY,SEC,paper,base,master,settings)
         st.session_state.pop("matches_table",None)
@@ -711,7 +798,7 @@ with left:
         nc=next((x for x in ["hts_kor_isnm","prdt_name"] if x in rd),None)
         colmap={cc:"코드",nc:"종목명","stck_prpr":"현재가","prdy_ctrt":"등락률","acml_vol":"거래량",
                 "_turnover_100m":"거래대금(억)","_cap_100m":"시총(억)","_per":"PER","_roe":"ROE",
-                "_surge_pct":"거래량비%","_near_high_pct":"신고가거리%"}
+                "_surge_pct":"거래량비%","_near_high_pct":"신고가거리%","_earnings_signal":"실적판정"}
         cols=[x for x in colmap if x and x in rd.columns]
         v=rd[cols].copy().rename(columns={x:colmap[x] for x in cols})
         for x in ["거래대금(억)","시총(억)","PER","ROE","거래량비%","신고가거리%"]:
@@ -739,14 +826,28 @@ with left:
                 code = str(chosen[cc]).zfill(6)
                 name = str(chosen[nc])
         st.caption(f"1차 후보 {st.session_state.get('pro_candidate_count', len(rd))}개 → 최종 {len(rd)}개 · 행 클릭 시 오른쪽 차트 변경")
-    else:st.info("조건검색 PRO를 실행하면 결과가 표시됩니다. 필터를 너무 많이 켜면 결과가 0개일 수 있습니다.")
+    else:
+        st.markdown(
+            '<div style="color:#FF4D5A; font-weight:700;">'
+            '조건검색 PRO를 실행하면 결과가 표시됩니다. 필터를 너무 많이 켜면 결과가 0개일 수 있습니다.'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
 with right:
     try:qv=price(KEY,SEC,paper,code)
     except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
     api_name=qv.get("hts_kor_isnm") or qv.get("prdt_name") or name
     cur,rate,volume,value,cap=[num(qv.get(x)) for x in ["stck_prpr","prdy_ctrt","acml_vol","acml_tr_pbmn","hts_avls"]]
-    st.markdown(f'<div class="head">{api_name} | {code}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
+    selected_signal=""
+    selected_signal_reason=""
+    try:
+        _selected_fund=naver_fundamental_2025_2028(code)
+        selected_signal,_,selected_signal_reason=earnings_momentum(_selected_fund)
+    except Exception:
+        _selected_fund=pd.DataFrame()
+    signal_html=f" &nbsp; <span style='font-size:14px'>{selected_signal}</span>" if selected_signal else ""
+    st.markdown(f'<div class="head">{api_name} | {code}{signal_html}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
     cs=st.columns(5)
     vals=[("현재가",f"{cur:,.0f}"),("등락률",f"{rate:+.2f}%"),("거래량",f"{volume:,.0f}"),
           ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
@@ -764,7 +865,7 @@ with right:
     with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS / PER / ROE", expanded=False):
         st.caption("네이버 증권 종목분석 Financial Summary 기준 · 2025A 확정실적 + 2026E~2028E 컨센서스입니다.")
         try:
-            f3 = naver_fundamental_2025_2028(code)
+            f3 = _selected_fund if '_selected_fund' in locals() and not _selected_fund.empty else naver_fundamental_2025_2028(code)
             if f3.empty:
                 st.info("이 종목은 2025~2028 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
             else:
@@ -774,7 +875,10 @@ with right:
                 })
                 st.dataframe(view, hide_index=True, use_container_width=True)
 
-                st.markdown(f"**실적 추세 : {profit_trend_label(f3)}**")
+                mom_label,mom_score,mom_reason=earnings_momentum(f3)
+                st.markdown(f"**실적 모멘텀 : {mom_label}** &nbsp; · &nbsp; 점수 `{mom_score:+d}`")
+                st.caption(f"판정 근거 · {mom_reason}")
+                st.markdown(f"**영업이익 추세 : {profit_trend_label(f3)}**")
                 op=f3.dropna(subset=["영업이익"]).copy()
                 if not op.empty:
                     pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"], text=[f"{x:,.0f}" for x in op["영업이익"]], textposition="outside"))
@@ -810,4 +914,4 @@ with right:
             )
     except Exception as e:st.error(f"차트 조회 오류: {e}")
 
-st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · KIS 추정실적 2025~2028 분석 · 주문/자동매매 미포함")
+st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
