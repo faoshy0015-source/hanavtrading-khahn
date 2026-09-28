@@ -295,10 +295,10 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
     return out
 
 @st.cache_data(ttl=21600, show_spinner=False)
-def fundamental_3y(code, market, current_per=0.0):
-    """최근 3개 확정 연도의 영업이익/EPS/PER/ROE를 조회한다.
-    yfinance의 연간 손익계산서/재무상태표/연말 주가를 조합한다.
-    데이터가 없는 항목은 NaN으로 유지해 UI에서 '-'로 표시한다.
+def fundamental_2025_2028(code, market, current_per=0.0):
+    """2025~2028년 영업이익/EPS/PER/ROE를 표시한다.
+    공개 데이터에 실제/예상 연간 값이 존재하는 연도만 채우고, 없는 미래 예상치는 NaN으로 유지한다.
+    임의 추정값은 생성하지 않는다.
     """
     suffix = ".KS" if str(market).upper() == "KOSPI" else ".KQ"
     ticker = yf.Ticker(f"{str(code).zfill(6)}{suffix}")
@@ -307,13 +307,12 @@ def fundamental_3y(code, market, current_per=0.0):
     if inc is None or inc.empty:
         return pd.DataFrame()
 
-    # 열은 최근 연도 우선인 경우가 많으므로 날짜 기준으로 정렬 후 최근 3개만 사용
+    # 2025~2028년만 사용. 제공되지 않는 미래 예상치는 아래에서 빈 값으로 보완한다.
     cols=[]
     for c in inc.columns:
         try: cols.append((pd.Timestamp(c), c))
         except Exception: pass
-    cols=sorted(cols, key=lambda x:x[0])[-3:]
-    if not cols: return pd.DataFrame()
+    cols=sorted([(dt,col) for dt,col in cols if 2025 <= dt.year <= 2028], key=lambda x:x[0])
 
     def stmt_value(df, names, col):
         if df is None or df.empty: return float('nan')
@@ -325,8 +324,7 @@ def fundamental_3y(code, market, current_per=0.0):
 
     # 연말 종가로 역사적 PER을 근사 계산하기 위한 가격 데이터
     try:
-        first_year=min(x[0].year for x in cols)
-        hist=ticker.history(start=f"{first_year}-01-01", end=f"{max(x[0].year for x in cols)+1}-02-01", auto_adjust=False)
+        hist=ticker.history(start="2025-01-01", end="2029-02-01", auto_adjust=False)
     except Exception:
         hist=pd.DataFrame()
 
@@ -346,10 +344,12 @@ def fundamental_3y(code, market, current_per=0.0):
             except Exception: pass
         rows.append({"연도":year,"영업이익":op,"EPS":eps,"PER":per,"ROE":roe})
 
-    df=pd.DataFrame(rows).sort_values('연도').reset_index(drop=True)
-    # 최신 PER은 KIS 현재값이 있으면 참고용으로 교체
-    if not df.empty and current_per and current_per != 0:
-        df.loc[df.index[-1], 'PER'] = current_per
+    # 2025~2028 네 개 연도를 항상 화면에 유지한다. 데이터가 없으면 '-'로 표시된다.
+    base=pd.DataFrame({'연도':[2025,2026,2027,2028]})
+    df=base.merge(pd.DataFrame(rows),on='연도',how='left') if rows else base.assign(영업이익=float('nan'),EPS=float('nan'),PER=float('nan'),ROE=float('nan'))
+    # 현재 PER은 올해(2026) 참고값으로 사용한다.
+    if current_per and current_per != 0:
+        df.loc[df['연도']==2026, 'PER'] = current_per
     return df
 
 
@@ -610,12 +610,12 @@ with right:
     except Exception:
         pass
 
-    with st.expander("📊 기업실적 상세보기 · 최근 3개년 영업이익 / EPS / PER / ROE", expanded=False):
-        st.caption("최근 확정 연간 재무제표 기준입니다. PER은 연말 종가÷EPS로 계산하며, 최신 연도는 KIS 현재 PER을 참고합니다.")
+    with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS / PER / ROE", expanded=False):
+        st.caption("2025~2028년 기준입니다. 공개 데이터에 실제/예상치가 있는 항목만 표시하며, 제공되지 않는 미래 예상치는 임의 계산하지 않고 - 로 표시합니다. 2026 PER은 KIS 현재값을 참고합니다.")
         try:
-            f3 = fundamental_3y(code, selected_market, num(qv.get("per")))
+            f3 = fundamental_2025_2028(code, selected_market, num(qv.get("per")))
             if f3.empty:
-                st.info("이 종목은 최근 3개년 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
+                st.info("이 종목은 2025~2028 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
             else:
                 years=[str(int(x)) for x in f3["연도"].tolist()]
                 view=pd.DataFrame({
@@ -628,7 +628,7 @@ with right:
                 op=f3.dropna(subset=["영업이익"]).copy()
                 if not op.empty:
                     pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"]/1e8, text=[f"{x/1e8:,.0f}억" for x in op["영업이익"]], textposition="outside"))
-                    pf.update_layout(title="최근 3개년 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="억원", showlegend=False)
+                    pf.update_layout(title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="억원", showlegend=False)
                     pf.update_xaxes(gridcolor="#1D302A")
                     pf.update_yaxes(gridcolor="#1D302A")
                     st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
@@ -660,4 +660,4 @@ with right:
             )
     except Exception as e:st.error(f"차트 조회 오류: {e}")
 
-st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · 기업실적 3개년 분석 · 주문/자동매매 미포함")
+st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · 기업실적 2025~2028 분석 · 주문/자동매매 미포함")
