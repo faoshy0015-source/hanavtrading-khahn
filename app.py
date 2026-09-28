@@ -8,6 +8,7 @@ from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 import time
+import yfinance as yf
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
 
@@ -293,6 +294,85 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
             continue
     return out
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def fundamental_3y(code, market, current_per=0.0):
+    """최근 3개 확정 연도의 영업이익/EPS/PER/ROE를 조회한다.
+    yfinance의 연간 손익계산서/재무상태표/연말 주가를 조합한다.
+    데이터가 없는 항목은 NaN으로 유지해 UI에서 '-'로 표시한다.
+    """
+    suffix = ".KS" if str(market).upper() == "KOSPI" else ".KQ"
+    ticker = yf.Ticker(f"{str(code).zfill(6)}{suffix}")
+    inc = ticker.income_stmt
+    bal = ticker.balance_sheet
+    if inc is None or inc.empty:
+        return pd.DataFrame()
+
+    # 열은 최근 연도 우선인 경우가 많으므로 날짜 기준으로 정렬 후 최근 3개만 사용
+    cols=[]
+    for c in inc.columns:
+        try: cols.append((pd.Timestamp(c), c))
+        except Exception: pass
+    cols=sorted(cols, key=lambda x:x[0])[-3:]
+    if not cols: return pd.DataFrame()
+
+    def stmt_value(df, names, col):
+        if df is None or df.empty: return float('nan')
+        for n in names:
+            if n in df.index:
+                try: return float(pd.to_numeric(df.loc[n, col], errors='coerce'))
+                except Exception: pass
+        return float('nan')
+
+    # 연말 종가로 역사적 PER을 근사 계산하기 위한 가격 데이터
+    try:
+        first_year=min(x[0].year for x in cols)
+        hist=ticker.history(start=f"{first_year}-01-01", end=f"{max(x[0].year for x in cols)+1}-02-01", auto_adjust=False)
+    except Exception:
+        hist=pd.DataFrame()
+
+    rows=[]
+    for dt,col in cols:
+        year=int(dt.year)
+        op=stmt_value(inc,["Operating Income","Total Operating Income As Reported"],col)
+        eps=stmt_value(inc,["Diluted EPS","Basic EPS"],col)
+        net=stmt_value(inc,["Net Income","Net Income Common Stockholders"],col)
+        equity=stmt_value(bal,["Stockholders Equity","Total Equity Gross Minority Interest"],col) if col in getattr(bal,'columns',[]) else float('nan')
+        roe=(net/equity*100) if pd.notna(net) and pd.notna(equity) and equity!=0 else float('nan')
+        per=float('nan')
+        if pd.notna(eps) and eps!=0 and hist is not None and not hist.empty:
+            try:
+                yh=hist[hist.index.year==year]
+                if not yh.empty: per=float(yh['Close'].dropna().iloc[-1])/eps
+            except Exception: pass
+        rows.append({"연도":year,"영업이익":op,"EPS":eps,"PER":per,"ROE":roe})
+
+    df=pd.DataFrame(rows).sort_values('연도').reset_index(drop=True)
+    # 최신 PER은 KIS 현재값이 있으면 참고용으로 교체
+    if not df.empty and current_per and current_per != 0:
+        df.loc[df.index[-1], 'PER'] = current_per
+    return df
+
+
+def fmt_profit(v):
+    if v is None or pd.isna(v): return "-"
+    # 원 단위 → 억원
+    return f"{v/1e8:,.0f}억"
+
+def fmt_metric(v, suffix=""):
+    if v is None or pd.isna(v): return "-"
+    return f"{v:,.2f}{suffix}"
+
+def profit_trend_label(df):
+    if df is None or df.empty or len(df)<2: return "판단 데이터 부족"
+    vals=pd.to_numeric(df['영업이익'],errors='coerce').dropna()
+    if len(vals)<2: return "판단 데이터 부족"
+    a,b=float(vals.iloc[-2]),float(vals.iloc[-1])
+    base=max(abs(a),1.0)
+    ch=(b-a)/base*100
+    if ch>=10: return f"↗ 개선 ({ch:+.1f}%)"
+    if ch<=-10: return f"↘ 악화 ({ch:+.1f}%)"
+    return f"→ 정체 ({ch:+.1f}%)"
+
 def fig(d,n,c):
     """HTS형 가격 + 거래량 차트. Plotly subplot을 명시적으로 구성한다."""
     if d is None or d.empty:
@@ -360,7 +440,7 @@ def fig(d,n,c):
     )
     return f
 
-st.markdown('<div class="title">HanaV Trading · 한국투자증권 KIS Open API</div>',unsafe_allow_html=True)
+st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
 
 if not KEY or not SEC:
     st.error("KIS_APP_KEY / KIS_APP_SECRET이 설정되지 않았습니다.")
@@ -521,6 +601,41 @@ with right:
           ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
     for c,(l,v) in zip(cs,vals):
         with c:st.markdown(f'<div class="box"><div class="lab">{l}</div><div class="val">{v}</div></div>',unsafe_allow_html=True)
+
+    # ===== 기업실적 상세보기 =====
+    selected_market = "KOSPI"
+    try:
+        mr = master[master["code"].astype(str) == str(code).zfill(6)]
+        if not mr.empty: selected_market = str(mr.iloc[0].get("market","KOSPI"))
+    except Exception:
+        pass
+
+    with st.expander("📊 기업실적 상세보기 · 최근 3개년 영업이익 / EPS / PER / ROE", expanded=False):
+        st.caption("최근 확정 연간 재무제표 기준입니다. PER은 연말 종가÷EPS로 계산하며, 최신 연도는 KIS 현재 PER을 참고합니다.")
+        try:
+            f3 = fundamental_3y(code, selected_market, num(qv.get("per")))
+            if f3.empty:
+                st.info("이 종목은 최근 3개년 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
+            else:
+                years=[str(int(x)) for x in f3["연도"].tolist()]
+                view=pd.DataFrame({
+                    "구분":["영업이익","EPS","PER","ROE"],
+                    **{str(int(r["연도"])):[fmt_profit(r["영업이익"]), fmt_metric(r["EPS"],"원"), fmt_metric(r["PER"],"배"), fmt_metric(r["ROE"],"%")] for _,r in f3.iterrows()}
+                })
+                st.dataframe(view, hide_index=True, use_container_width=True)
+
+                st.markdown(f"**실적 추세 : {profit_trend_label(f3)}**")
+                op=f3.dropna(subset=["영업이익"]).copy()
+                if not op.empty:
+                    pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"]/1e8, text=[f"{x/1e8:,.0f}억" for x in op["영업이익"]], textposition="outside"))
+                    pf.update_layout(title="최근 3개년 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="억원", showlegend=False)
+                    pf.update_xaxes(gridcolor="#1D302A")
+                    pf.update_yaxes(gridcolor="#1D302A")
+                    st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
+                st.caption("※ 재무데이터는 외부 공개 데이터 소스를 사용하므로 공시 정정·연결/별도 기준·데이터 제공 시점에 따라 값이 달라질 수 있습니다.")
+        except Exception as e:
+            st.warning(f"기업실적 조회 실패: {e}")
+
     st.write("")
     pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
     per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
@@ -545,4 +660,4 @@ with right:
             )
     except Exception as e:st.error(f"차트 조회 오류: {e}")
 
-st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · 주문/자동매매 미포함")
+st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선 조건검색 · 기업실적 3개년 분석 · 주문/자동매매 미포함")
