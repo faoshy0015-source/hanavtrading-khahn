@@ -764,6 +764,109 @@ def profit_trend_label(df):
     if ch<=-10: return f"↘ 악화 ({ch:+.1f}%)"
     return f"→ 정체 ({ch:+.1f}%)"
 
+
+def _safe_series_value(df, year, col):
+    try:
+        row=df[df["연도"]==year]
+        if row.empty: return None
+        v=pd.to_numeric(pd.Series([row.iloc[0][col]]),errors="coerce").iloc[0]
+        return None if pd.isna(v) else float(v)
+    except Exception: return None
+
+def _pct_change(a,b):
+    if a is None or b is None or abs(a)<1e-12: return None
+    return (b-a)/abs(a)*100.0
+
+def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name):
+    sections={}; risks=[]
+    op25=_safe_series_value(fund,2025,"영업이익"); op28=_safe_series_value(fund,2028,"영업이익")
+    eps25=_safe_series_value(fund,2025,"EPS"); eps28=_safe_series_value(fund,2028,"EPS")
+    roe25=_safe_series_value(fund,2025,"ROE"); roe28=_safe_series_value(fund,2028,"ROE")
+    opg=_pct_change(op25,op28); epsg=_pct_change(eps25,eps28)
+    perf=[]
+    if opg is not None:
+        direction="증가" if opg>5 else ("감소" if opg<-5 else "보합")
+        perf.append(f"영업이익은 2025A 대비 2028E {direction} 흐름({opg:+.1f}%)입니다.")
+        if opg<-5: risks.append("2028E 영업이익이 2025A보다 낮은 추정치입니다.")
+    if epsg is not None:
+        direction="증가" if epsg>5 else ("감소" if epsg<-5 else "보합")
+        perf.append(f"EPS는 2025A 대비 2028E {direction} 흐름({epsg:+.1f}%)입니다.")
+        if epsg<-5: risks.append("EPS 컨센서스가 장기적으로 둔화되는 흐름입니다.")
+    if roe25 is not None and roe28 is not None:
+        diff=roe28-roe25
+        perf.append(f"ROE는 {roe25:.2f}% → {roe28:.2f}%로 {diff:+.2f}%p 변화가 예상됩니다.")
+        if diff<-0.5: risks.append("ROE 추정치 하락 여부를 확인할 필요가 있습니다.")
+    sections["실적"]=" ".join(perf) if perf else "2025A~2028E 실적 데이터가 부족해 추세 판정이 어렵습니다."
+
+    per25=_safe_series_value(fund,2025,"PER"); per26=_safe_series_value(fund,2026,"PER"); per28=_safe_series_value(fund,2028,"PER")
+    vals=[]
+    if per25 is not None: vals.append(f"2025A {per25:.2f}배")
+    if per26 is not None: vals.append(f"2026E {per26:.2f}배")
+    if per28 is not None: vals.append(f"2028E {per28:.2f}배")
+    vt=("PER은 "+", ".join(vals)+"입니다.") if vals else "PER 컨센서스 데이터가 부족합니다."
+    if per26 is not None and per28 is not None:
+        if epsg is not None and epsg>5 and per28<per26:
+            vt+=" EPS 성장과 함께 Forward PER이 낮아져 추정실적 기준 밸류에이션 부담이 완화되는 방향입니다."
+        elif epsg is not None and epsg<-5:
+            vt+=" PER 하락이 이익 감소와 함께 나타나면 단순 저평가로 해석하기 어렵습니다."
+        elif per28>per26*1.15:
+            vt+=" Forward PER이 확대되는 흐름이므로 향후 이익 증가가 기대를 충족하는지 확인할 필요가 있습니다."
+        else:
+            vt+=" Forward PER 변화가 크지 않아 실적 추정치의 방향성이 더 중요합니다."
+    sections["밸류에이션"]=vt
+
+    tech=[]
+    if chart_df is not None and not chart_df.empty:
+        last=chart_df.iloc[-1]; px=float(last.get("close",current_price) or current_price)
+        mas={}
+        for ma in ["MA5","MA20","MA60","MA120"]:
+            try:
+                v=float(last[ma])
+                if pd.notna(v): mas[ma]=v
+            except Exception: pass
+        above=[m for m,v in mas.items() if px>v]; below=[m for m,v in mas.items() if px<v]
+        tech.append(f"{period_name} 기준입니다.")
+        if above: tech.append(f"현재가는 {', '.join(above)} 위에 있습니다.")
+        if below: tech.append(f"현재가는 {', '.join(below)} 아래에 있습니다.")
+        if all(m in mas for m in ["MA5","MA20","MA60","MA120"]):
+            if mas["MA5"]>mas["MA20"]>mas["MA60"]>mas["MA120"]:
+                tech.append("MA5·20·60·120이 정배열입니다.")
+            elif mas["MA5"]<mas["MA20"]<mas["MA60"]<mas["MA120"]:
+                tech.append("MA5·20·60·120이 역배열입니다."); risks.append("이동평균선이 역배열 상태입니다.")
+            else: tech.append("이동평균선은 혼조 배열입니다.")
+        try:
+            vols=pd.to_numeric(chart_df["volume"],errors="coerce").dropna()
+            if len(vols)>=21:
+                recent=float(vols.iloc[-1]); avg20=float(vols.iloc[-21:-1].mean())
+                vr=recent/avg20 if avg20>0 else None
+                if vr is not None:
+                    label="확대" if vr>=1.5 else ("감소" if vr<=0.7 else "평균 수준")
+                    tech.append(f"최근 거래량은 직전 20개 봉 평균의 {vr:.1f}배로 {label} 상태입니다.")
+        except Exception: pass
+    sections["차트"]=" ".join(tech) if tech else "차트 데이터가 부족해 기술적 분석을 할 수 없습니다."
+
+    positives=0
+    if opg is not None and opg>5: positives+=1
+    if epsg is not None and epsg>5: positives+=1
+    if roe25 is not None and roe28 is not None and roe28>roe25+0.5: positives+=1
+    if chart_df is not None and not chart_df.empty:
+        try:
+            last=chart_df.iloc[-1]
+            if float(last["close"])>float(last["MA20"]): positives+=1
+            if float(last["close"])>float(last["MA60"]): positives+=1
+        except Exception: pass
+    sections["종합"]=("실적과 기술지표에서 긍정적인 항목이 상대적으로 많이 확인됩니다." if positives>=4 else
+                    "실적 또는 기술지표에서 뚜렷한 개선 신호가 제한적이므로 개별 지표 확인이 중요합니다." if positives<=1 else
+                    "긍정 요인과 확인이 필요한 요인이 함께 나타나는 혼조 상태입니다.")
+    sections["체크포인트"]=" ".join(dict.fromkeys(risks)) if risks else "현재 규칙에서 두드러진 경고 항목은 없지만 2026E~2028E 컨센서스는 변경될 수 있습니다."
+    return sections
+
+def render_analysis_card(title,body):
+    html=("<div style='background:#0D1512;border:1px solid #315047;border-radius:7px;padding:12px 14px;margin:7px 0;'>"
+          f"<div style='color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:6px;'>{title}</div>"
+          f"<div style='color:#DDEBE5;font-size:13px;line-height:1.65;'>{body}</div></div>")
+    st.markdown(html,unsafe_allow_html=True)
+
 def fig(d,n,c):
     """HTS형 가격 + 거래량 차트. Plotly subplot을 명시적으로 구성한다."""
     if d is None or d.empty:
@@ -1154,6 +1257,7 @@ with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS
 st.write("")
 pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
 per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
+d=pd.DataFrame()
 try:
     raw_chart = chart(KEY,SEC,paper,code,per)
     d = chartdf(raw_chart)
@@ -1174,5 +1278,34 @@ try:
             }
         )
 except Exception as e:st.error(f"차트 조회 오류: {e}")
+
+
+st.markdown("---")
+st.markdown("### 🤖 HanaV 분석 어시스턴트")
+st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트 데이터를 규칙 기반으로 해석합니다. AI API 비용 0원.")
+
+analysis_fund=_selected_fund if "_selected_fund" in locals() else pd.DataFrame()
+analysis_sections=rule_based_stock_analysis(api_name,code,analysis_fund,d,cur,pername)
+
+b1,b2,b3,b4=st.columns(4)
+if b1.button("📊 실적 분석",use_container_width=True,key=f"assist_perf_{code}"): st.session_state["hanav_analysis_mode"]="실적"
+if b2.button("💰 밸류에이션",use_container_width=True,key=f"assist_value_{code}"): st.session_state["hanav_analysis_mode"]="밸류에이션"
+if b3.button("📈 차트 분석",use_container_width=True,key=f"assist_chart_{code}_{per}"): st.session_state["hanav_analysis_mode"]="차트"
+if b4.button("🔍 종합 분석",use_container_width=True,key=f"assist_all_{code}"): st.session_state["hanav_analysis_mode"]="종합분석"
+
+mode=st.session_state.get("hanav_analysis_mode","종합분석")
+if mode=="실적":
+    render_analysis_card("📊 실적 분석",analysis_sections["실적"])
+elif mode=="밸류에이션":
+    render_analysis_card("💰 밸류에이션 분석",analysis_sections["밸류에이션"])
+elif mode=="차트":
+    render_analysis_card("📈 차트 분석",analysis_sections["차트"])
+else:
+    render_analysis_card("📊 실적",analysis_sections["실적"])
+    render_analysis_card("💰 밸류에이션",analysis_sections["밸류에이션"])
+    render_analysis_card("📈 차트",analysis_sections["차트"])
+    render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
+    render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
+st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
 
 st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
