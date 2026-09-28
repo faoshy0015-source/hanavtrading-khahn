@@ -1059,10 +1059,10 @@ if run_scan:
 rows=st.session_state.get("rows",[])
 rd=pd.DataFrame(rows) if rows else pd.DataFrame()
 
-left,right=st.columns([1.15,4.2],gap="small")
-with left:
-    st.markdown("### MATCHES")
-    if not rd.empty:
+# 조건검색 결과가 있을 때만 접을 수 있는 전체폭 결과표를 표시합니다.
+# 검색 전에는 MATCHES/안내 영역을 만들지 않아 종목 상세와 차트가 화면 전체 폭을 사용합니다.
+if not rd.empty:
+    with st.expander(f"🔎 조건검색 PRO 결과 · {len(rd)}종목", expanded=False):
         cc=next((x for x in ["_code","mksc_shrn_iscd","stck_shrn_iscd"] if x in rd),None)
         nc=next((x for x in ["hts_kor_isnm","prdt_name"] if x in rd),None)
         colmap={cc:"코드",nc:"종목명","stck_prpr":"현재가","prdy_ctrt":"등락률","acml_vol":"거래량",
@@ -1095,92 +1095,84 @@ with left:
                 code = str(chosen[cc]).zfill(6)
                 name = str(chosen[nc])
         st.caption(f"1차 후보 {st.session_state.get('pro_candidate_count', len(rd))}개 → 최종 {len(rd)}개 · 행 클릭 시 오른쪽 차트 변경")
-    else:
-        st.markdown(
-            '<div style="color:#FF4D5A; font-weight:700;">'
-            '조건검색 PRO를 실행하면 결과가 표시됩니다. 필터를 너무 많이 켜면 결과가 0개일 수 있습니다.'
-            '</div>',
-            unsafe_allow_html=True
-        )
 
-with right:
-    try:qv=price(KEY,SEC,paper,code)
-    except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
-    api_name=qv.get("hts_kor_isnm") or qv.get("prdt_name") or name
-    cur,rate,volume,value,cap=[num(qv.get(x)) for x in ["stck_prpr","prdy_ctrt","acml_vol","acml_tr_pbmn","hts_avls"]]
-    selected_signal=""
-    selected_signal_reason=""
+try:qv=price(KEY,SEC,paper,code)
+except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
+api_name=qv.get("hts_kor_isnm") or qv.get("prdt_name") or name
+cur,rate,volume,value,cap=[num(qv.get(x)) for x in ["stck_prpr","prdy_ctrt","acml_vol","acml_tr_pbmn","hts_avls"]]
+selected_signal=""
+selected_signal_reason=""
+try:
+    _selected_fund=naver_fundamental_2025_2028(code)
+    selected_signal,_,selected_signal_reason=earnings_momentum(_selected_fund)
+except Exception:
+    _selected_fund=pd.DataFrame()
+signal_html=f" &nbsp; <span style='font-size:14px'>{selected_signal}</span>" if selected_signal else ""
+st.markdown(f'<div class="head">{api_name} | {code}{signal_html}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
+cs=st.columns(5)
+vals=[("현재가",f"{cur:,.0f}"),("등락률",f"{rate:+.2f}%"),("거래량",f"{volume:,.0f}"),
+      ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
+for c,(l,v) in zip(cs,vals):
+    with c:st.markdown(f'<div class="box"><div class="lab">{l}</div><div class="val">{v}</div></div>',unsafe_allow_html=True)
+
+# ===== 기업실적 상세보기 =====
+selected_market = "KOSPI"
+try:
+    mr = master[master["code"].astype(str) == str(code).zfill(6)]
+    if not mr.empty: selected_market = str(mr.iloc[0].get("market","KOSPI"))
+except Exception:
+    pass
+
+with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS / PER / ROE", expanded=False):
+    st.caption("네이버 증권 종목분석 Financial Summary 기준 · 2025A 확정실적 + 2026E~2028E 컨센서스입니다.")
     try:
-        _selected_fund=naver_fundamental_2025_2028(code)
-        selected_signal,_,selected_signal_reason=earnings_momentum(_selected_fund)
-    except Exception:
-        _selected_fund=pd.DataFrame()
-    signal_html=f" &nbsp; <span style='font-size:14px'>{selected_signal}</span>" if selected_signal else ""
-    st.markdown(f'<div class="head">{api_name} | {code}{signal_html}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
-    cs=st.columns(5)
-    vals=[("현재가",f"{cur:,.0f}"),("등락률",f"{rate:+.2f}%"),("거래량",f"{volume:,.0f}"),
-          ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
-    for c,(l,v) in zip(cs,vals):
-        with c:st.markdown(f'<div class="box"><div class="lab">{l}</div><div class="val">{v}</div></div>',unsafe_allow_html=True)
-
-    # ===== 기업실적 상세보기 =====
-    selected_market = "KOSPI"
-    try:
-        mr = master[master["code"].astype(str) == str(code).zfill(6)]
-        if not mr.empty: selected_market = str(mr.iloc[0].get("market","KOSPI"))
-    except Exception:
-        pass
-
-    with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS / PER / ROE", expanded=False):
-        st.caption("네이버 증권 종목분석 Financial Summary 기준 · 2025A 확정실적 + 2026E~2028E 컨센서스입니다.")
-        try:
-            f3 = _selected_fund if '_selected_fund' in locals() and not _selected_fund.empty else naver_fundamental_2025_2028(code)
-            if f3.empty:
-                st.info("이 종목은 2025~2028 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
-            else:
-                view=pd.DataFrame({
-                    "구분":["영업이익","EPS","PER","ROE"],
-                    **{f'{int(r["연도"])}{r.get("구분","")}':[("-" if pd.isna(r["영업이익"]) else f'{r["영업이익"]:,.0f}'), ("-" if pd.isna(r["EPS"]) else f'{r["EPS"]:,.0f}원'), fmt_metric(r["PER"],"배"), fmt_metric(r["ROE"],"%")] for _,r in f3.iterrows()}
-                })
-                st.dataframe(view, hide_index=True, use_container_width=True)
-
-                mom_label,mom_score,mom_reason=earnings_momentum(f3)
-                st.markdown(f"**실적 모멘텀 : {mom_label}** &nbsp; · &nbsp; 점수 `{mom_score:+d}`")
-                st.caption(f"판정 근거 · {mom_reason}")
-                st.markdown(f"**영업이익 추세 : {profit_trend_label(f3)}**")
-                op=f3.dropna(subset=["영업이익"]).copy()
-                if not op.empty:
-                    pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"], text=[f"{x:,.0f}" for x in op["영업이익"]], textposition="outside"))
-                    pf.update_layout(title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="영업이익(억원)", showlegend=False)
-                    pf.update_xaxes(gridcolor="#1D302A")
-                    pf.update_yaxes(gridcolor="#1D302A")
-                    st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
-                st.caption("※ 출처: 네이버 증권 종목분석에 연결된 WiseReport Financial Summary. 2026E~2028E는 컨센서스이며 수시로 변경될 수 있습니다. 공개 HTML 구조 변경 시 조회 기능 수정이 필요할 수 있습니다.")
-        except Exception as e:
-            st.warning(f"기업실적 조회 실패: {e}")
-
-    st.write("")
-    pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
-    per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
-    try:
-        raw_chart = chart(KEY,SEC,paper,code,per)
-        d = chartdf(raw_chart)
-        if d.empty:
-            st.warning("차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
+        f3 = _selected_fund if '_selected_fund' in locals() and not _selected_fund.empty else naver_fundamental_2025_2028(code)
+        if f3.empty:
+            st.info("이 종목은 2025~2028 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
         else:
-            chart_fig = fig(d, api_name, code)
-            st.plotly_chart(
-                chart_fig,
-                use_container_width=True,
-                theme=None,
-                key=f"price_volume_{code}_{per}",
-                config={
-                    "displaylogo":False,
-                    "scrollZoom":True,
-                    "responsive":True,
-                    "modeBarButtonsToRemove":["lasso2d","select2d"]
-                }
-            )
-    except Exception as e:st.error(f"차트 조회 오류: {e}")
+            view=pd.DataFrame({
+                "구분":["영업이익","EPS","PER","ROE"],
+                **{f'{int(r["연도"])}{r.get("구분","")}':[("-" if pd.isna(r["영업이익"]) else f'{r["영업이익"]:,.0f}'), ("-" if pd.isna(r["EPS"]) else f'{r["EPS"]:,.0f}원'), fmt_metric(r["PER"],"배"), fmt_metric(r["ROE"],"%")] for _,r in f3.iterrows()}
+            })
+            st.dataframe(view, hide_index=True, use_container_width=True)
+
+            mom_label,mom_score,mom_reason=earnings_momentum(f3)
+            st.markdown(f"**실적 모멘텀 : {mom_label}** &nbsp; · &nbsp; 점수 `{mom_score:+d}`")
+            st.caption(f"판정 근거 · {mom_reason}")
+            st.markdown(f"**영업이익 추세 : {profit_trend_label(f3)}**")
+            op=f3.dropna(subset=["영업이익"]).copy()
+            if not op.empty:
+                pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"], text=[f"{x:,.0f}" for x in op["영업이익"]], textposition="outside"))
+                pf.update_layout(title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="영업이익(억원)", showlegend=False)
+                pf.update_xaxes(gridcolor="#1D302A")
+                pf.update_yaxes(gridcolor="#1D302A")
+                st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
+            st.caption("※ 출처: 네이버 증권 종목분석에 연결된 WiseReport Financial Summary. 2026E~2028E는 컨센서스이며 수시로 변경될 수 있습니다. 공개 HTML 구조 변경 시 조회 기능 수정이 필요할 수 있습니다.")
+    except Exception as e:
+        st.warning(f"기업실적 조회 실패: {e}")
+
+st.write("")
+pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
+per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
+try:
+    raw_chart = chart(KEY,SEC,paper,code,per)
+    d = chartdf(raw_chart)
+    if d.empty:
+        st.warning("차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
+    else:
+        chart_fig = fig(d, api_name, code)
+        st.plotly_chart(
+            chart_fig,
+            use_container_width=True,
+            theme=None,
+            key=f"price_volume_{code}_{per}",
+            config={
+                "displaylogo":False,
+                "scrollZoom":True,
+                "responsive":True,
+                "modeBarButtonsToRemove":["lasso2d","select2d"]
+            }
+        )
+except Exception as e:st.error(f"차트 조회 오류: {e}")
 
 st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
