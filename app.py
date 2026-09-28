@@ -740,7 +740,19 @@ if not KEY or not SEC:
     st.stop()
 
 with st.sidebar:
-    st.header("HanaV Trading")
+    st.markdown(
+        """
+        <div style="margin:0 0 8px 0; padding:0;">
+            <div style="color:#37F0A7; font-size:18px; font-weight:900; line-height:1.15;">
+                HanaV Trading
+            </div>
+            <div style="color:#8FA69D; font-size:11px; font-weight:600; letter-spacing:0.3px; margin-top:2px;">
+                Designed &amp; Built by K.H. Ahn
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     paper=False
     market_symbols=[
         ("KOSPI","^KS11"),("KOSDAQ","^KQ11"),("NASDAQ","^IXIC"),
