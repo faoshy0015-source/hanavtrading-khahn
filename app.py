@@ -1456,7 +1456,7 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
 </style>
 """,unsafe_allow_html=True)
 
-pername=st.selectbox("차트 주기",["15분봉","30분봉","일봉","주봉","월봉"])
+pername=st.selectbox("차트 주기",["일봉","주봉","월봉","15분봉","30분봉"], index=0)
 per={"일봉":"D","주봉":"W","월봉":"M"}.get(pername,pername)
 d=pd.DataFrame()
 try:
