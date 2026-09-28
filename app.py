@@ -346,29 +346,79 @@ def investor_trade_daily(k,s,p,c):
 @st.cache_data(ttl=60,show_spinner=False)
 def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
 
-@st.cache_data(ttl=30,show_spinner=False)
-def minute_chart_raw(k,s,p,c):
-    """KIS 당일 분봉 원본 조회. 15/30분봉은 이 데이터를 앱에서 리샘플링한다."""
+@st.cache_data(ttl=60,show_spinner=False)
+def minute_chart_raw(k,s,p,c,days=5):
+    """KIS 주식일별분봉조회로 최근 N거래일 분봉 원본을 모은다."""
     x=client(k,s,p)
-    now=datetime.now()
-    # 장중이면 현재시각, 장후면 15:30. 장전이면 09:00 기준
-    hhmmss=now.strftime("%H%M%S")
-    if hhmmss > "153000": hhmmss="153000"
-    if hhmmss < "090000": hhmmss="090000"
-    data=x.get(
-        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
-        "FHKST03010200",
-        {
-            "FID_ETC_CLS_CODE":"",
-            "FID_COND_MRKT_DIV_CODE":"J",
-            "FID_INPUT_ISCD":str(c).zfill(6),
-            "FID_INPUT_HOUR_1":hhmmss,
-            "FID_PW_DATA_INCU_YN":"Y",
-        },
-    )
-    rows=data.get("output2",[])
-    if isinstance(rows,dict): rows=[rows]
-    return rows or []
+    wanted=max(1,int(days))
+    all_rows=[]
+    found_dates=set()
+
+    # 휴장일을 고려해 넉넉하게 과거 날짜를 탐색한다.
+    ref=datetime.now()
+    max_calendar_days=max(12,wanted*3+10)
+
+    for back in range(max_calendar_days):
+        dt=ref-timedelta(days=back)
+        if dt.weekday()>=5:
+            continue
+
+        date_str=dt.strftime("%Y%m%d")
+        current_time="153000"
+        day_rows=[]
+
+        # 공식 API는 1회 최대 120건이므로 같은 거래일을 시간 역순으로 이어서 조회.
+        for _ in range(5):
+            try:
+                data=x.get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+                    "FHKST03010230",
+                    {
+                        "FID_COND_MRKT_DIV_CODE":"J",
+                        "FID_INPUT_ISCD":str(c).zfill(6),
+                        "FID_INPUT_HOUR_1":current_time,
+                        "FID_INPUT_DATE_1":date_str,
+                        "FID_PW_DATA_INCU_YN":"Y",
+                        "FID_FAKE_TICK_INCU_YN":"",
+                    },
+                )
+            except Exception:
+                day_rows=[]
+                break
+
+            rows=data.get("output2",[])
+            if isinstance(rows,dict):
+                rows=[rows]
+            if not rows:
+                break
+
+            # 요청한 날짜의 데이터만 사용.
+            rows=[r for r in rows if str(r.get("stck_bsop_date",""))==date_str]
+            if not rows:
+                break
+
+            day_rows.extend(rows)
+            times=[str(r.get("stck_cntg_hour","")) for r in rows if r.get("stck_cntg_hour")]
+            if not times:
+                break
+            earliest=min(times)
+            if earliest<="090000" or len(rows)<120:
+                break
+
+            # 중복 페이지를 피하려고 가장 이른 체결시각보다 1초 이전으로 이동.
+            try:
+                tm=datetime.strptime(earliest,"%H%M%S")-timedelta(seconds=1)
+                current_time=tm.strftime("%H%M%S")
+            except Exception:
+                break
+
+        if day_rows:
+            all_rows.extend(day_rows)
+            found_dates.add(date_str)
+            if len(found_dates)>=wanted:
+                break
+
+    return all_rows
 
 def minute_chartdf(rows,minutes):
     if not rows:return pd.DataFrame()
@@ -1458,10 +1508,21 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
 
 pername=st.selectbox("차트 주기",["일봉","주봉","월봉","15분봉","30분봉"], index=0)
 per={"일봉":"D","주봉":"W","월봉":"M"}.get(pername,pername)
+
+minute_days=5
+if pername in ["15분봉","30분봉"]:
+    minute_days=st.selectbox(
+        "조회기간",
+        [1,3,5,10,20],
+        index=2,
+        format_func=lambda x:f"{x}일",
+        key=f"minute_days_{code}_{pername}"
+    )
+
 d=pd.DataFrame()
 try:
     if pername in ["15분봉","30분봉"]:
-        raw_chart=minute_chart_raw(KEY,SEC,paper,code)
+        raw_chart=minute_chart_raw(KEY,SEC,paper,code,minute_days)
         d=minute_chartdf(raw_chart,15 if pername=="15분봉" else 30)
     else:
         raw_chart=chart(KEY,SEC,paper,code,per)
@@ -1469,12 +1530,15 @@ try:
     if d.empty:
         st.warning("차트 데이터가 없습니다. 15분/30분봉은 KIS 분봉 원본 제공 범위 내에서 표시됩니다." if pername in ["15분봉","30분봉"] else "차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
     else:
+        if pername in ["15분봉","30분봉"]:
+            actual_days=d["date"].dt.strftime("%Y%m%d").nunique() if "date" in d else 0
+            st.caption(f"KIS 일별 분봉 · 최근 {actual_days}거래일 표시 · {pername}")
         chart_fig = fig(d, api_name, code)
         st.plotly_chart(
             chart_fig,
             use_container_width=True,
             theme=None,
-            key=f"price_volume_{code}_{pername}",
+            key=f"price_volume_{code}_{pername}_{minute_days}",
             config={
                 "displaylogo":False,
                 "scrollZoom":True,
