@@ -220,7 +220,17 @@ def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
 @st.cache_data(ttl=20,show_spinner=False)
 def scan(k,s,p,m,c,lo,hi,v,r1,r2):return client(k,s,p).scan(m,c,lo,hi,v,r1,r2)
 @st.cache_data(ttl=21600,show_spinner=False)
-def estimate_perform(k,s,p,c):return client(k,s,p).estimate_perform(c)
+def estimate_perform(k,s,p,c):
+    # client()는 cache_resource이므로 코드 수정 후에도 이전 KIS 인스턴스가 남을 수 있다.
+    # estimate_perform 메서드 존재 여부에 의존하지 않고 공통 get()으로 직접 호출한다.
+    x = client(k,s,p)
+    if p:
+        raise RuntimeError("종목추정실적 API는 모의투자에서 지원되지 않습니다. 모의투자 API를 끄고 조회해 주세요.")
+    return x.get(
+        "/uapi/domestic-stock/v1/quotations/estimate-perform",
+        "HHKST668300C0",
+        {"SHT_CD":str(c).zfill(6)}
+    )
 
 def chartdf(rows):
     if not rows:return pd.DataFrame()
