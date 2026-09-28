@@ -270,8 +270,28 @@ class KIS:
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-price","FHKST01010100",
                         {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",{})
     def investor(self,c):
-        return self.get("/uapi/domestic-stock/v1/quotations/inquire-investor","FHKST01010900",
-                        {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",[])
+        # KIS 공식: 종목별 투자자매매동향(일별)
+        # 당일은 정산 전 TIME LIMIT 오류가 날 수 있어 직전 평일을 기준일로 사용한다.
+        ref = datetime.now() - timedelta(days=1)
+        while ref.weekday() >= 5:  # 토/일이면 직전 금요일
+            ref -= timedelta(days=1)
+
+        d = self.get(
+            "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
+            "FHPTJ04160001",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": str(c).zfill(6),
+                "FID_INPUT_DATE_1": ref.strftime("%Y%m%d"),
+                "FID_ORG_ADJ_PRC": "",
+                "FID_ETC_CLS_CODE": "",
+            },
+        )
+        # 일별 개인/외국인/기관 데이터는 output2에 들어온다.
+        rows = d.get("output2", [])
+        if isinstance(rows, dict):
+            rows = [rows]
+        return rows or []
     def chart(self,c,p):
         end=datetime.now(); start=end-timedelta(days={"D":365,"W":1095,"M":2920}[p])
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",
@@ -783,16 +803,36 @@ def _pct_change(a,b):
     return (b-a)/abs(a)*100.0
 
 def investor_df(rows):
-    if not rows: return pd.DataFrame()
-    df=pd.DataFrame(rows).copy()
-    need=["stck_bsop_date","prsn_ntby_qty","frgn_ntby_qty","orgn_ntby_qty"]
-    if not all(x in df.columns for x in need): return pd.DataFrame()
-    out=df[need].copy()
-    out.columns=["date","개인","외국인","기관"]
-    out["date"]=pd.to_datetime(out["date"],format="%Y%m%d",errors="coerce")
+    """KIS investor-trade-by-stock-daily output2 -> 표준 수급 DataFrame."""
+    if not rows:
+        return pd.DataFrame(columns=["date","개인","외국인","기관"])
+
+    df = pd.DataFrame(rows).copy()
+    colmap = {
+        "stck_bsop_date": "date",
+        "prsn_ntby_qty": "개인",
+        "frgn_ntby_qty": "외국인",
+        "orgn_ntby_qty": "기관",
+    }
+    missing = [c for c in colmap if c not in df.columns]
+    if missing:
+        raise RuntimeError("KIS 수급 응답 필드 누락: " + ", ".join(missing))
+
+    out = df[list(colmap)].rename(columns=colmap)
+    out["date"] = pd.to_datetime(out["date"], format="%Y%m%d", errors="coerce")
     for c in ["개인","외국인","기관"]:
-        out[c]=pd.to_numeric(out[c],errors="coerce").fillna(0)
-    return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+        out[c] = pd.to_numeric(
+            out[c].astype(str).str.replace(",", "", regex=False),
+            errors="coerce"
+        ).fillna(0)
+
+    out = (
+        out.dropna(subset=["date"])
+           .drop_duplicates(subset=["date"], keep="first")
+           .sort_values("date")
+           .reset_index(drop=True)
+    )
+    return out
 
 def investor_summary(df,days):
     if df is None or df.empty: return {"개인":0.0,"외국인":0.0,"기관":0.0}
@@ -1345,6 +1385,7 @@ except Exception as e:st.error(f"차트 조회 오류: {e}")
 
 st.markdown("---")
 # ===== 투자자 수급 =====
+flow_error=""
 try:
     flow_rows=investor_flow(KEY,SEC,paper,code)
     flow_df=investor_df(flow_rows)
@@ -1370,12 +1411,17 @@ if not flow_df.empty:
     ff.update_xaxes(gridcolor="#1D302A")
     ff.update_yaxes(gridcolor="#1D302A",title="순매수 수량(주)")
     st.plotly_chart(ff,use_container_width=True,theme=None,key=f"investor_flow_{code}")
-    st.caption("※ KIS 투자자 데이터 기준. 외국인은 외국인+기타 외국인을 포함하며, 당일 데이터는 장 종료 후 제공됩니다.")
+    first_dt=flow_df["date"].min().strftime("%Y-%m-%d")
+    last_dt=flow_df["date"].max().strftime("%Y-%m-%d")
+    st.caption(f"※ KIS 종목별 투자자매매동향(일별) 기준 · 조회 데이터 {first_dt} ~ {last_dt} · 외국인은 KIS 제공 외국인 순매수 수량 기준입니다.")
 else:
-    st.info("이 종목의 개인·외국인·기관 수급 데이터를 불러오지 못했습니다.")
+    if flow_error:
+        st.error(f"KIS 수급 조회 오류 · {flow_error}")
+    else:
+        st.info("조회된 투자자 수급 데이터가 없습니다. 기준일 또는 KIS 데이터 제공 상태를 확인해 주세요.")
 
 st.markdown("### 🤖 HanaV 분석 어시스턴트")
-st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트·투자자 수급을 자동으로 종합 해석합니다. AI API 비용 0원.")
+st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트·KIS 일별 투자자 수급을 자동으로 종합 해석합니다. AI API 비용 0원.")
 
 analysis_fund=_selected_fund if "_selected_fund" in locals() else pd.DataFrame()
 analysis_sections=rule_based_stock_analysis(api_name,code,analysis_fund,d,cur,pername,flow_df)
