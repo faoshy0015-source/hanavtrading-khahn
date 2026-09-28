@@ -269,6 +269,9 @@ class KIS:
     def price(self,c):
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-price","FHKST01010100",
                         {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",{})
+    def investor(self,c):
+        return self.get("/uapi/domestic-stock/v1/quotations/inquire-investor","FHKST01010900",
+                        {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",[])
     def chart(self,c,p):
         end=datetime.now(); start=end-timedelta(days={"D":365,"W":1095,"M":2920}[p])
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",
@@ -293,6 +296,8 @@ def client(k,s,p):
     x=KIS(k,s,p);x.auth();return x
 @st.cache_data(ttl=10,show_spinner=False)
 def price(k,s,p,c):return client(k,s,p).price(c)
+@st.cache_data(ttl=300,show_spinner=False)
+def investor_flow(k,s,p,c):return client(k,s,p).investor(c)
 @st.cache_data(ttl=60,show_spinner=False)
 def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
 @st.cache_data(ttl=20,show_spinner=False)
@@ -777,7 +782,59 @@ def _pct_change(a,b):
     if a is None or b is None or abs(a)<1e-12: return None
     return (b-a)/abs(a)*100.0
 
-def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name):
+def investor_df(rows):
+    if not rows: return pd.DataFrame()
+    df=pd.DataFrame(rows).copy()
+    need=["stck_bsop_date","prsn_ntby_qty","frgn_ntby_qty","orgn_ntby_qty"]
+    if not all(x in df.columns for x in need): return pd.DataFrame()
+    out=df[need].copy()
+    out.columns=["date","개인","외국인","기관"]
+    out["date"]=pd.to_datetime(out["date"],format="%Y%m%d",errors="coerce")
+    for c in ["개인","외국인","기관"]:
+        out[c]=pd.to_numeric(out[c],errors="coerce").fillna(0)
+    return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+def investor_summary(df,days):
+    if df is None or df.empty: return {"개인":0.0,"외국인":0.0,"기관":0.0}
+    x=df.tail(min(days,len(df)))
+    return {c:float(x[c].sum()) for c in ["개인","외국인","기관"]}
+
+def fmt_qty(v):
+    sign="+" if v>0 else ""
+    av=abs(v)
+    if av>=1000000: return f"{sign}{v/1000000:,.2f}백만주"
+    if av>=10000: return f"{sign}{v/10000:,.1f}만주"
+    return f"{sign}{v:,.0f}주"
+
+def investor_interpretation(df):
+    if df is None or df.empty:
+        return "투자자별 수급 데이터를 불러오지 못했습니다.", "수급 데이터 확인이 필요합니다."
+    s5=investor_summary(df,5); s20=investor_summary(df,20)
+    parts=[
+        f"최근 5거래일: 개인 {fmt_qty(s5['개인'])}, 외국인 {fmt_qty(s5['외국인'])}, 기관 {fmt_qty(s5['기관'])}.",
+        f"최근 20거래일: 개인 {fmt_qty(s20['개인'])}, 외국인 {fmt_qty(s20['외국인'])}, 기관 {fmt_qty(s20['기관'])}."
+    ]
+    if s5["외국인"]>0 and s5["기관"]>0:
+        parts.append("단기적으로 외국인과 기관이 동반 순매수입니다.")
+        signal="외국인·기관 동반 순매수"
+    elif s5["외국인"]<0 and s5["기관"]<0:
+        parts.append("단기적으로 외국인과 기관이 동반 순매도입니다.")
+        signal="외국인·기관 동반 순매도"
+    elif s5["외국인"]>0 and s5["기관"]<0:
+        parts.append("외국인은 순매수, 기관은 순매도로 주요 주체의 방향이 엇갈립니다.")
+        signal="외국인 매수·기관 매도"
+    elif s5["외국인"]<0 and s5["기관"]>0:
+        parts.append("기관은 순매수, 외국인은 순매도로 주요 주체의 방향이 엇갈립니다.")
+        signal="기관 매수·외국인 매도"
+    else:
+        signal="수급 혼조"
+    if s20["외국인"]>0 and s20["기관"]>0:
+        parts.append("20거래일 누적으로도 외국인·기관 매수 우위가 확인됩니다.")
+    elif s20["외국인"]<0 and s20["기관"]<0:
+        parts.append("20거래일 누적으로도 외국인·기관 매도 우위가 확인됩니다.")
+    return " ".join(parts), signal
+
+def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name,flow_df=None):
     sections={}; risks=[]
     op25=_safe_series_value(fund,2025,"영업이익"); op28=_safe_series_value(fund,2028,"영업이익")
     eps25=_safe_series_value(fund,2025,"EPS"); eps28=_safe_series_value(fund,2028,"EPS")
@@ -845,6 +902,11 @@ def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name)
         except Exception: pass
     sections["차트"]=" ".join(tech) if tech else "차트 데이터가 부족해 기술적 분석을 할 수 없습니다."
 
+    flow_text,flow_signal=investor_interpretation(flow_df)
+    sections["수급"]=flow_text
+    if flow_signal=="외국인·기관 동반 순매도":
+        risks.append("최근 5거래일 외국인과 기관이 동반 순매도입니다.")
+
     positives=0
     if opg is not None and opg>5: positives+=1
     if epsg is not None and epsg>5: positives+=1
@@ -855,6 +917,7 @@ def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name)
             if float(last["close"])>float(last["MA20"]): positives+=1
             if float(last["close"])>float(last["MA60"]): positives+=1
         except Exception: pass
+    if flow_signal=="외국인·기관 동반 순매수": positives+=1
     sections["종합"]=("실적과 기술지표에서 긍정적인 항목이 상대적으로 많이 확인됩니다." if positives>=4 else
                     "실적 또는 기술지표에서 뚜렷한 개선 신호가 제한적이므로 개별 지표 확인이 중요합니다." if positives<=1 else
                     "긍정 요인과 확인이 필요한 요인이 함께 나타나는 혼조 상태입니다.")
@@ -1281,31 +1344,49 @@ except Exception as e:st.error(f"차트 조회 오류: {e}")
 
 
 st.markdown("---")
+# ===== 투자자 수급 =====
+try:
+    flow_rows=investor_flow(KEY,SEC,paper,code)
+    flow_df=investor_df(flow_rows)
+except Exception as e:
+    flow_df=pd.DataFrame()
+    flow_error=str(e)
+
+st.markdown("### 👥 투자자 수급")
+if not flow_df.empty:
+    s5=investor_summary(flow_df,5); s20=investor_summary(flow_df,20)
+    c1,c2,c3=st.columns(3)
+    c1.metric("개인 · 최근 5일",fmt_qty(s5["개인"]),f"20일 {fmt_qty(s20['개인'])}")
+    c2.metric("외국인 · 최근 5일",fmt_qty(s5["외국인"]),f"20일 {fmt_qty(s20['외국인'])}")
+    c3.metric("기관 · 최근 5일",fmt_qty(s5["기관"]),f"20일 {fmt_qty(s20['기관'])}")
+    fd=flow_df.tail(20).copy()
+    ff=go.Figure()
+    ff.add_trace(go.Bar(x=fd["date"],y=fd["개인"],name="개인"))
+    ff.add_trace(go.Bar(x=fd["date"],y=fd["외국인"],name="외국인"))
+    ff.add_trace(go.Bar(x=fd["date"],y=fd["기관"],name="기관"))
+    ff.update_layout(barmode="group",height=300,margin=dict(l=8,r=8,t=25,b=8),
+                     paper_bgcolor="#080D0B",plot_bgcolor="#080D0B",font=dict(color="#DCEAE4"),
+                     legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified")
+    ff.update_xaxes(gridcolor="#1D302A")
+    ff.update_yaxes(gridcolor="#1D302A",title="순매수 수량(주)")
+    st.plotly_chart(ff,use_container_width=True,theme=None,key=f"investor_flow_{code}")
+    st.caption("※ KIS 투자자 데이터 기준. 외국인은 외국인+기타 외국인을 포함하며, 당일 데이터는 장 종료 후 제공됩니다.")
+else:
+    st.info("이 종목의 개인·외국인·기관 수급 데이터를 불러오지 못했습니다.")
+
 st.markdown("### 🤖 HanaV 분석 어시스턴트")
-st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트 데이터를 규칙 기반으로 해석합니다. AI API 비용 0원.")
+st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트·투자자 수급을 자동으로 종합 해석합니다. AI API 비용 0원.")
 
 analysis_fund=_selected_fund if "_selected_fund" in locals() else pd.DataFrame()
-analysis_sections=rule_based_stock_analysis(api_name,code,analysis_fund,d,cur,pername)
+analysis_sections=rule_based_stock_analysis(api_name,code,analysis_fund,d,cur,pername,flow_df)
 
-b1,b2,b3,b4=st.columns(4)
-if b1.button("📊 실적 분석",use_container_width=True,key=f"assist_perf_{code}"): st.session_state["hanav_analysis_mode"]="실적"
-if b2.button("💰 밸류에이션",use_container_width=True,key=f"assist_value_{code}"): st.session_state["hanav_analysis_mode"]="밸류에이션"
-if b3.button("📈 차트 분석",use_container_width=True,key=f"assist_chart_{code}_{per}"): st.session_state["hanav_analysis_mode"]="차트"
-if b4.button("🔍 종합 분석",use_container_width=True,key=f"assist_all_{code}"): st.session_state["hanav_analysis_mode"]="종합분석"
+render_analysis_card("📊 실적",analysis_sections["실적"])
+render_analysis_card("💰 밸류에이션",analysis_sections["밸류에이션"])
+render_analysis_card("📈 차트",analysis_sections["차트"])
+render_analysis_card("👥 수급",analysis_sections["수급"])
+render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
+render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
 
-mode=st.session_state.get("hanav_analysis_mode","종합분석")
-if mode=="실적":
-    render_analysis_card("📊 실적 분석",analysis_sections["실적"])
-elif mode=="밸류에이션":
-    render_analysis_card("💰 밸류에이션 분석",analysis_sections["밸류에이션"])
-elif mode=="차트":
-    render_analysis_card("📈 차트 분석",analysis_sections["차트"])
-else:
-    render_analysis_card("📊 실적",analysis_sections["실적"])
-    render_analysis_card("💰 밸류에이션",analysis_sections["밸류에이션"])
-    render_analysis_card("📈 차트",analysis_sections["차트"])
-    render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
-    render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
-st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
+st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
 
 st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
