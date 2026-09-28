@@ -312,14 +312,37 @@ class KIS:
            "FID_RSFL_RATE1":str(r1),"FID_RSFL_RATE2":str(r2)}).get("output",[])
 
 @st.cache_resource(show_spinner=False)
-def client(k,s,p):
+def client(k,s,p,cache_version="20260928-investor-v2"):
     x=KIS(k,s,p);x.auth();return x
 @st.cache_data(ttl=10,show_spinner=False)
 def price(k,s,p,c):return client(k,s,p).price(c)
 
 @st.cache_data(ttl=300,show_spinner=False)
 def investor_trade_daily(k,s,p,c):
-    return client(k,s,p).investor_trade_daily(c)
+    # 중요: client()는 cache_resource라 배포 후 이전 KIS 인스턴스가 남을 수 있다.
+    # 새 메서드 존재 여부에 의존하지 않고 기존 공통 get()으로 공식 API를 직접 호출한다.
+    x = client(k,s,p)
+
+    ref = datetime.now() - timedelta(days=1)
+    while ref.weekday() >= 5:
+        ref -= timedelta(days=1)
+
+    data = x.get(
+        "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
+        "FHPTJ04160001",
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": str(c).zfill(6),
+            "FID_INPUT_DATE_1": ref.strftime("%Y%m%d"),
+            "FID_ORG_ADJ_PRC": "",
+            "FID_ETC_CLS_CODE": "",
+        },
+    )
+
+    rows = data.get("output2", [])
+    if isinstance(rows, dict):
+        rows = [rows]
+    return rows or []
 @st.cache_data(ttl=60,show_spinner=False)
 def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
 @st.cache_data(ttl=20,show_spinner=False)
@@ -1397,6 +1420,10 @@ except Exception as e:
 
 st.markdown("### 👥 투자자 수급")
 st.caption("KIS · 종목별 투자자매매동향(일별) / FHPTJ04160001")
+if st.button("🔄 수급 새로고침", key=f"refresh_investor_{code}", use_container_width=False):
+    investor_trade_daily.clear()
+    st.rerun()
+
 if not flow_df.empty:
     s5=investor_summary(flow_df,5); s20=investor_summary(flow_df,20)
     c1,c2,c3=st.columns(3)
