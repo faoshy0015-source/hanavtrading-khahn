@@ -12,7 +12,7 @@ import hmac
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
-st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
+st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 # ==================================================
 # APP PASSWORD LOGIN
@@ -83,9 +83,10 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     background:var(--bg) !important; color:var(--text) !important; min-height:100vh !important;
 }
 html, body { margin:0 !important; padding:0 !important; }
-header[data-testid="stHeader"] { display:none !important; height:0 !important; }
+header[data-testid="stHeader"] { background:transparent !important; height:2.5rem !important; }
 [data-testid="stToolbar"], [data-testid="stAppToolbar"], [data-testid="stDecoration"], #MainMenu, footer,
 .viewerBadge_container__1QSob { display:none !important; }
+[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display:flex !important; visibility:visible !important; opacity:1 !important; z-index:999999 !important; }
 [data-testid="stAppViewContainer"] > .main { min-height:100vh !important; padding-top:0 !important; }
 .main .block-container, [data-testid="stMainBlockContainer"] {
     max-width:100% !important; min-height:100vh !important; padding:.45rem .75rem .65rem .75rem !important;
