@@ -8,6 +8,7 @@ from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
@@ -114,6 +115,18 @@ hr { border-color:#24453A !important; }
     font-weight: 800 !important;
 }
 .st-key-refresh_today_market button:hover {
+    background: rgba(0, 184, 115, 0.08) !important;
+    color: #37F0A7 !important;
+    border-color: #00B873 !important;
+}
+
+.st-key-refresh_earnings_top button {
+    background: transparent !important;
+    color: #DDEBE5 !important;
+    border: 1px solid #315047 !important;
+    font-weight: 800 !important;
+}
+.st-key-refresh_earnings_top button:hover {
     background: rgba(0, 184, 115, 0.08) !important;
     color: #37F0A7 !important;
     border-color: #00B873 !important;
@@ -596,6 +609,90 @@ def earnings_momentum(df):
         label='➡️ 중립'
     return label, score, ' · '.join(reasons) if reasons else '판단 데이터 부족'
 
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def auto_earnings_top5(candidate_records):
+    """시총 상위 후보 → 거래대금 1차 정렬 → WiseReport 실적모멘텀 TOP 5.
+
+    candidate_records는 (code, name, market, master_cap) 튜플 목록.
+    결과는 6시간 캐시한다.
+    """
+    # 1차: 시가총액 상위 후보 중 현재 거래대금 확인
+    liquid=[]
+    for code,name,market,master_cap in candidate_records:
+        try:
+            q=price(KEY,SEC,False,str(code).zfill(6))
+            turnover=num(q.get("acml_tr_pbmn"))  # 원
+            if turnover <= 0:
+                continue
+            liquid.append({
+                "code":str(code).zfill(6), "name":str(name), "market":str(market),
+                "master_cap":float(master_cap) if master_cap is not None and pd.notna(master_cap) else 0.0,
+                "turnover":float(turnover),
+            })
+            time.sleep(0.03)
+        except Exception:
+            continue
+
+    # 거래대금 상위 20개만 컨센서스 분석
+    liquid=sorted(liquid, key=lambda x:x["turnover"], reverse=True)[:20]
+    if not liquid:
+        return []
+
+    def analyze(rec):
+        try:
+            fdf=naver_fundamental_2025_2028(rec["code"])
+            label,score,reason=earnings_momentum(fdf)
+            if label != "📈 실적개선":
+                return None
+            y2028=fdf[fdf["연도"]==2028]
+            eps28=float(y2028["EPS"].iloc[0]) if not y2028.empty and pd.notna(y2028["EPS"].iloc[0]) else None
+            out=dict(rec)
+            out.update({"signal":label,"score":int(score),"reason":reason,"eps_2028":eps28})
+            return out
+        except Exception:
+            return None
+
+    # WiseReport는 네트워크 I/O이므로 제한된 동시 요청으로 첫 계산 시간을 줄인다.
+    results=[]
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures=[ex.submit(analyze,rec) for rec in liquid]
+        for fut in as_completed(futures):
+            r=fut.result()
+            if r:
+                results.append(r)
+
+    # 점수 → 거래대금 → 시총 순
+    results.sort(key=lambda x:(x["score"],x["turnover"],x["master_cap"]), reverse=True)
+    return results[:5]
+
+def earnings_top_panel_html(rows):
+    if not rows:
+        body=(
+            '<div style="color:#8FA69D;font-size:12px;line-height:1.45;">'
+            '실적개선 종목을 계산하지 못했거나 컨센서스가 부족합니다.</div>'
+        )
+    else:
+        medals=["🥇","🥈","🥉","4","5"]
+        parts=[]
+        for i,r in enumerate(rows[:5]):
+            parts.append(
+                f'<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;'
+                f'border-bottom:1px solid #183028;">'
+                f'<span style="color:#DDEBE5;font-weight:750;">{medals[i]}&nbsp; {r["name"]}</span>'
+                f'<span style="color:#FF6B75;font-weight:900;">+{r["score"]}점</span></div>'
+            )
+        body=''.join(parts)
+    return (
+        '<div style="background:#0D1512;border:1px solid #315047;border-radius:6px;'
+        'padding:9px 10px;margin:8px 0 6px 0;">'
+        '<div style="color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:4px;">📈 실적개선 TOP 5</div>'
+        + body +
+        '<div style="color:#718A80;font-size:10px;margin-top:6px;">'
+        '기준: 2025A→2028E · 시총 40→거래대금 20 · 6시간 캐시</div></div>'
+    )
+
+
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
     # 원 단위 → 억원
@@ -768,16 +865,46 @@ with st.sidebar:
         public_market_quote.clear()
         st.rerun()
     st.caption("지수·환율은 최근 확인 가능한 시세 기준 · 약 1분 캐시")
-    st.divider()
-    st.subheader("전체 종목 검색")
-    search_market = st.selectbox("검색 시장", ["전체", "KOSPI", "KOSDAQ"], key="stock_search_market")
-    q=st.text_input("종목명 또는 6자리 코드","삼성전자").strip()
 
+    # 종목마스터는 실적 TOP과 전체 종목 검색이 함께 사용한다.
     try:
         master = load_stock_master()
     except Exception as e:
         st.error(f"종목 마스터 다운로드 오류: {e}")
-        master = pd.DataFrame([{"code":"005930","name":"삼성전자","market":"KOSPI","std_code":""}])
+        master = pd.DataFrame([{
+            "code":"005930","name":"삼성전자","market":"KOSPI","std_code":"",
+            "roe":float("nan"),"prev_volume":float("nan"),"master_cap":float("nan")
+        }])
+
+    # 시총 상위 40개를 1차 후보로 삼고, 함수 내부에서 거래대금 상위 20개로 다시 축소한다.
+    top_candidates = master.copy()
+    if "master_cap" in top_candidates.columns:
+        top_candidates["master_cap"] = pd.to_numeric(top_candidates["master_cap"], errors="coerce")
+        top_candidates = top_candidates.dropna(subset=["master_cap"]).sort_values("master_cap", ascending=False).head(40)
+    else:
+        top_candidates = top_candidates.head(40)
+    candidate_records = tuple(
+        (str(r.code).zfill(6), str(r.name), str(r.market),
+         float(r.master_cap) if hasattr(r,"master_cap") and pd.notna(r.master_cap) else 0.0)
+        for r in top_candidates.itertuples()
+    )
+
+    with st.spinner("실적개선 TOP 분석 중... 최초 계산은 잠시 걸릴 수 있습니다."):
+        try:
+            earnings_top = auto_earnings_top5(candidate_records)
+        except Exception:
+            earnings_top = []
+
+    st.markdown(earnings_top_panel_html(earnings_top), unsafe_allow_html=True)
+    if st.button("🔄 실적 TOP 새로고침", use_container_width=True, key="refresh_earnings_top"):
+        auto_earnings_top5.clear()
+        naver_fundamental_2025_2028.clear()
+        st.rerun()
+
+    st.divider()
+    st.subheader("전체 종목 검색")
+    search_market = st.selectbox("검색 시장", ["전체", "KOSPI", "KOSDAQ"], key="stock_search_market")
+    q=st.text_input("종목명 또는 6자리 코드","삼성전자").strip()
 
     search_df = master
     if search_market != "전체":
