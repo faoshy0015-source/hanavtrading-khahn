@@ -670,6 +670,54 @@ def fig(d,n,c):
     )
     return f
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def public_market_quote(symbol):
+    """공개 시세 endpoint에서 최근 두 종가를 읽어 지수/환율과 등락률을 계산한다."""
+    url=f"https://query1.finance.yahoo.com/v8/finance/chart/{requests.utils.quote(symbol, safe='')}"
+    r=requests.get(
+        url,
+        params={"range":"5d","interval":"1d","includePrePost":"false","events":"div,splits"},
+        headers={"User-Agent":"Mozilla/5.0"},
+        timeout=10
+    )
+    r.raise_for_status()
+    result=r.json().get("chart",{}).get("result") or []
+    if not result: raise RuntimeError("시세 응답 없음")
+    node=result[0]
+    closes=((node.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    closes=[float(x) for x in closes if x is not None]
+    if not closes: raise RuntimeError("종가 데이터 없음")
+    cur=closes[-1]; prev=closes[-2] if len(closes)>=2 else None
+    rate=((cur-prev)/prev*100) if prev not in (None,0) else None
+    return cur,rate
+
+def market_panel_html(items):
+    valid_rates=[r for _,_,r in items if r is not None]
+    avg=sum(valid_rates)/len(valid_rates) if valid_rates else 0
+    mood="🟢 강세" if avg>=0.5 else ("🔴 약세" if avg<=-0.5 else "⚪ 중립")
+    rows=[]
+    for label,value,rate in items:
+        if value is None:
+            value_txt="-"; rate_txt="-"; color="#AFC7BE"
+        else:
+            value_txt=f"{value:,.2f}"
+            rate_txt="-" if rate is None else f"{rate:+.2f}%"
+            color="#AFC7BE" if rate is None else ("#FF4D5A" if rate>0 else ("#3D8BFF" if rate<0 else "#DCEAE4"))
+        rows.append(
+            f'<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #183028;">'
+            f'<span style="color:#DDEBE5;font-weight:700;">{label}</span>'
+            f'<span><b style="color:#FFFFFF;">{value_txt}</b>&nbsp;&nbsp;<b style="color:{color};">{rate_txt}</b></span></div>'
+        )
+    return (
+        '<div style="background:#0D1512;border:1px solid #00B873;border-radius:6px;padding:9px 10px;margin:4px 0 8px 0;">'
+        '<div style="color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:5px;">📊 오늘의 시장</div>'
+        + ''.join(rows) +
+        f'<div style="display:flex;justify-content:space-between;padding-top:7px;">'
+        f'<span style="color:#AFC7BE;font-weight:700;">시장 분위기</span>'
+        f'<span style="color:#FFFFFF;font-weight:900;">{mood}</span></div></div>'
+    )
+
 st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
 
 if not KEY or not SEC:
@@ -680,8 +728,21 @@ if not KEY or not SEC:
 
 with st.sidebar:
     st.header("HanaV Trading")
-    paper=st.toggle("모의투자 API",False)
-    st.caption("현재 버전은 시세 조회/분석용입니다.")
+    paper=False
+    market_symbols=[
+        ("KOSPI","^KS11"),("KOSDAQ","^KQ11"),("NASDAQ","^IXIC"),
+        ("DOW","^DJI"),("USD/KRW","KRW=X"),
+    ]
+    market_items=[]
+    for market_label, market_symbol in market_symbols:
+        try: mv,mr=public_market_quote(market_symbol)
+        except Exception: mv,mr=None,None
+        market_items.append((market_label,mv,mr))
+    st.markdown(market_panel_html(market_items), unsafe_allow_html=True)
+    if st.button("🔄 오늘의 시장 새로고침", use_container_width=True, key="refresh_today_market"):
+        public_market_quote.clear()
+        st.rerun()
+    st.caption("지수·환율은 최근 확인 가능한 시세 기준 · 약 1분 캐시")
     st.divider()
     st.subheader("전체 종목 검색")
     search_market = st.selectbox("검색 시장", ["전체", "KOSPI", "KOSDAQ"], key="stock_search_market")
