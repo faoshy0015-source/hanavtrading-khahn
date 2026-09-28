@@ -8,10 +8,61 @@ from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 import time
+import hmac
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide")
+
+# ==================================================
+# APP PASSWORD LOGIN
+# Streamlit Cloud > App settings > Secrets:
+# APP_PASSWORD = "원하는 비밀번호"
+# ==================================================
+def _get_app_password():
+    try:
+        return str(st.secrets["APP_PASSWORD"])
+    except Exception:
+        return ""
+
+def _check_app_password():
+    expected=_get_app_password()
+    entered=str(st.session_state.get("_hanav_password",""))
+    ok=bool(expected) and hmac.compare_digest(entered, expected)
+    st.session_state["_hanav_authenticated"]=ok
+    st.session_state["_hanav_login_error"]=not ok
+    st.session_state["_hanav_password"]=""
+
+def _logout_hanav():
+    st.session_state["_hanav_authenticated"]=False
+    st.session_state["_hanav_login_error"]=False
+
+st.session_state.setdefault("_hanav_authenticated",False)
+st.session_state.setdefault("_hanav_login_error",False)
+
+if not st.session_state["_hanav_authenticated"]:
+    st.markdown("""
+    <div style="max-width:430px;margin:11vh auto 22px;text-align:center;">
+      <div style="font-size:34px;font-weight:950;color:#00B873;">HanaV Trading</div>
+      <div style="margin-top:7px;color:#8FA69D;font-size:13px;font-weight:650;">Private Investment Dashboard</div>
+      <div style="margin-top:4px;color:#6F847C;font-size:11px;">Designed &amp; Built by K.H. Ahn</div>
+    </div>""",unsafe_allow_html=True)
+
+    if not _get_app_password():
+        st.error("APP_PASSWORD가 설정되지 않았습니다. Streamlit Cloud의 App settings → Secrets에 APP_PASSWORD를 추가해 주세요.")
+        st.stop()
+
+    _l,_c,_r=st.columns([1,1.15,1])
+    with _c:
+        st.text_input("비밀번호",type="password",key="_hanav_password",
+                      placeholder="비밀번호를 입력하세요",on_change=_check_app_password)
+        if st.button("🔐 로그인",use_container_width=True,key="_hanav_login_button"):
+            _check_app_password()
+            st.rerun()
+        if st.session_state.get("_hanav_login_error",False):
+            st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
 
 REAL_URL="https://openapi.koreainvestment.com:9443"
 PAPER_URL="https://openapivts.koreainvestment.com:29443"
@@ -975,6 +1026,11 @@ with st.sidebar:
     candidate_count=st.slider("1차 후보 수",10,50,40,5,help="KIS 등락률 순위에서 먼저 가져올 후보 수")
     result_count=st.slider("최종 결과 수",5,30,20,5)
     run_scan=st.button("조건검색 PRO 실행",type="primary",use_container_width=True)
+
+    st.divider()
+    if st.button("🔒 로그아웃",use_container_width=True,key="_hanav_logout_button"):
+        _logout_hanav()
+        st.rerun()
 
 try:client(KEY,SEC,paper)
 except Exception as e:
