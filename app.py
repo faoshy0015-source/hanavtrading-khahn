@@ -184,6 +184,44 @@ hr { border-color:#24453A !important; }
     border-color: #00B873 !important;
 }
 
+
+/* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
+@media (min-width: 769px) {
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        transform: translateX(0) !important;
+        left: 0 !important;
+        min-width: 21rem !important;
+        width: 21rem !important;
+        max-width: 21rem !important;
+    }
+
+    section[data-testid="stSidebar"] > div {
+        display: block !important;
+        visibility: visible !important;
+        min-width: 21rem !important;
+        width: 21rem !important;
+        max-width: 21rem !important;
+    }
+
+    [data-testid="stSidebarContent"] {
+        display: block !important;
+        visibility: visible !important;
+        min-width: 21rem !important;
+        width: 21rem !important;
+    }
+
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        z-index: 999999 !important;
+    }
+}
+
 </style>""",unsafe_allow_html=True)
 
 def secret(k):
