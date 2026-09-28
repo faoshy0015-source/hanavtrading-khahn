@@ -106,6 +106,19 @@ section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, sectio
 [data-testid="stDataFrame"] { border:1px solid #00A968 !important; }
 hr { border-color:#24453A !important; }
 
+/* 오늘의 시장 새로고침 버튼: 흰색 배경 제거 */
+.st-key-refresh_today_market button {
+    background: transparent !important;
+    color: #DDEBE5 !important;
+    border: 1px solid #315047 !important;
+    font-weight: 800 !important;
+}
+.st-key-refresh_today_market button:hover {
+    background: rgba(0, 184, 115, 0.08) !important;
+    color: #37F0A7 !important;
+    border-color: #00B873 !important;
+}
+
 </style>""",unsafe_allow_html=True)
 
 def secret(k):
