@@ -1410,6 +1410,32 @@ except Exception as e:st.error(f"차트 조회 오류: {e}")
 
 st.markdown("---")
 # ===== 투자자 수급 =====
+st.markdown("""
+<style>
+/* 투자자 수급 숫자 시인성 */
+div[data-testid="stMetricValue"] {
+    color: #F4FFF9 !important;
+    opacity: 1 !important;
+}
+div[data-testid="stMetricDelta"] {
+    color: #D8F5E8 !important;
+    opacity: 1 !important;
+}
+
+/* 수급 새로고침 버튼: 흰 배경 제거 */
+div[data-testid="stButton"] button[kind="secondary"] {
+    background: transparent !important;
+    color: #E9FFF6 !important;
+    border: 1px solid #285C4A !important;
+    box-shadow: none !important;
+}
+div[data-testid="stButton"] button[kind="secondary"]:hover {
+    background: rgba(20, 90, 65, 0.16) !important;
+    border-color: #35C98B !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 flow_error=""
 try:
     flow_rows=investor_trade_daily(KEY,SEC,paper,code)
@@ -1427,9 +1453,9 @@ if st.button("🔄 수급 새로고침", key=f"refresh_investor_{code}", use_con
 if not flow_df.empty:
     s5=investor_summary(flow_df,5); s20=investor_summary(flow_df,20)
     c1,c2,c3=st.columns(3)
-    c1.metric("개인 · 최근 5일",fmt_qty(s5["개인"]),f"20일 {fmt_qty(s20['개인'])}")
-    c2.metric("외국인 · 최근 5일",fmt_qty(s5["외국인"]),f"20일 {fmt_qty(s20['외국인'])}")
-    c3.metric("기관 · 최근 5일",fmt_qty(s5["기관"]),f"20일 {fmt_qty(s20['기관'])}")
+    c1.metric("개인 · 최근 5일",fmt_qty(s5["개인"]),f"20일 {fmt_qty(s20['개인'])}",delta_color="off")
+    c2.metric("외국인 · 최근 5일",fmt_qty(s5["외국인"]),f"20일 {fmt_qty(s20['외국인'])}",delta_color="off")
+    c3.metric("기관 · 최근 5일",fmt_qty(s5["기관"]),f"20일 {fmt_qty(s20['기관'])}",delta_color="off")
     fd=flow_df.tail(20).copy()
     ff=go.Figure()
     ff.add_trace(go.Bar(x=fd["date"],y=fd["개인"],name="개인"))
