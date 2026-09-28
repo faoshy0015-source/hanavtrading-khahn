@@ -345,6 +345,60 @@ def investor_trade_daily(k,s,p,c):
     return rows or []
 @st.cache_data(ttl=60,show_spinner=False)
 def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
+
+@st.cache_data(ttl=30,show_spinner=False)
+def minute_chart_raw(k,s,p,c):
+    """KIS 당일 분봉 원본 조회. 15/30분봉은 이 데이터를 앱에서 리샘플링한다."""
+    x=client(k,s,p)
+    now=datetime.now()
+    # 장중이면 현재시각, 장후면 15:30. 장전이면 09:00 기준
+    hhmmss=now.strftime("%H%M%S")
+    if hhmmss > "153000": hhmmss="153000"
+    if hhmmss < "090000": hhmmss="090000"
+    data=x.get(
+        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+        "FHKST03010200",
+        {
+            "FID_ETC_CLS_CODE":"",
+            "FID_COND_MRKT_DIV_CODE":"J",
+            "FID_INPUT_ISCD":str(c).zfill(6),
+            "FID_INPUT_HOUR_1":hhmmss,
+            "FID_PW_DATA_INCU_YN":"Y",
+        },
+    )
+    rows=data.get("output2",[])
+    if isinstance(rows,dict): rows=[rows]
+    return rows or []
+
+def minute_chartdf(rows,minutes):
+    if not rows:return pd.DataFrame()
+    x=pd.DataFrame(rows).copy()
+    aliases={
+        "stck_bsop_date":"date","stck_cntg_hour":"time",
+        "stck_oprc":"open","stck_hgpr":"high","stck_lwpr":"low",
+        "stck_prpr":"close","cntg_vol":"volume"
+    }
+    need=list(aliases.keys())
+    if not all(c in x.columns for c in need):
+        return pd.DataFrame()
+    x=x[need].rename(columns=aliases)
+    x["datetime"]=pd.to_datetime(
+        x["date"].astype(str)+x["time"].astype(str).str.zfill(6),
+        format="%Y%m%d%H%M%S",errors="coerce"
+    )
+    for c in ["open","high","low","close","volume"]:
+        x[c]=pd.to_numeric(x[c].astype(str).str.replace(",","",regex=False),errors="coerce")
+    x=x.dropna(subset=["datetime","open","high","low","close","volume"]).sort_values("datetime")
+    if x.empty:return pd.DataFrame()
+    x=x.set_index("datetime")
+    rule=f"{int(minutes)}min"
+    d=x.resample(rule,origin="start_day",offset="0min",label="left",closed="left").agg(
+        open=("open","first"), high=("high","max"), low=("low","min"),
+        close=("close","last"), volume=("volume","sum")
+    ).dropna().reset_index().rename(columns={"datetime":"date"})
+    for n in [5,20,60,120]:
+        d[f"MA{n}"]=d["close"].rolling(n).mean()
+    return d
 @st.cache_data(ttl=20,show_spinner=False)
 def scan(k,s,p,m,c,lo,hi,v,r1,r2):return client(k,s,p).scan(m,c,lo,hi,v,r1,r2)
 @st.cache_data(ttl=21600,show_spinner=False)
@@ -1383,21 +1437,44 @@ with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS
         st.warning(f"기업실적 조회 실패: {e}")
 
 st.write("")
-pername=st.selectbox("차트 주기",["일봉","주봉","월봉"])
-per={"일봉":"D","주봉":"W","월봉":"M"}[pername]
+st.markdown("""
+<style>
+/* 차트 주기 라벨/선택값/옵션 글자 밝게 */
+div[data-testid="stSelectbox"] label,
+div[data-testid="stSelectbox"] label p {
+    color:#F4FFF9 !important;
+    opacity:1 !important;
+    font-weight:800 !important;
+}
+div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    color:#F4FFF9 !important;
+}
+div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+    color:#F4FFF9 !important;
+    opacity:1 !important;
+}
+</style>
+""",unsafe_allow_html=True)
+
+pername=st.selectbox("차트 주기",["15분봉","30분봉","일봉","주봉","월봉"])
+per={"일봉":"D","주봉":"W","월봉":"M"}.get(pername,pername)
 d=pd.DataFrame()
 try:
-    raw_chart = chart(KEY,SEC,paper,code,per)
-    d = chartdf(raw_chart)
+    if pername in ["15분봉","30분봉"]:
+        raw_chart=minute_chart_raw(KEY,SEC,paper,code)
+        d=minute_chartdf(raw_chart,15 if pername=="15분봉" else 30)
+    else:
+        raw_chart=chart(KEY,SEC,paper,code,per)
+        d=chartdf(raw_chart)
     if d.empty:
-        st.warning("차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
+        st.warning("차트 데이터가 없습니다. 15분/30분봉은 KIS 분봉 원본 제공 범위 내에서 표시됩니다." if pername in ["15분봉","30분봉"] else "차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
     else:
         chart_fig = fig(d, api_name, code)
         st.plotly_chart(
             chart_fig,
             use_container_width=True,
             theme=None,
-            key=f"price_volume_{code}_{per}",
+            key=f"price_volume_{code}_{pername}",
             config={
                 "displaylogo":False,
                 "scrollZoom":True,
