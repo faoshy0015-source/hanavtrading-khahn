@@ -269,14 +269,13 @@ class KIS:
     def price(self,c):
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-price","FHKST01010100",
                         {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",{})
-    def investor(self,c):
-        # KIS 공식: 종목별 투자자매매동향(일별)
-        # 당일은 정산 전 TIME LIMIT 오류가 날 수 있어 직전 평일을 기준일로 사용한다.
+    def investor_trade_daily(self,c):
+        """KIS 종목별 투자자매매동향(일별) - 개인/외국인/기관 순매수."""
         ref = datetime.now() - timedelta(days=1)
-        while ref.weekday() >= 5:  # 토/일이면 직전 금요일
+        while ref.weekday() >= 5:
             ref -= timedelta(days=1)
 
-        d = self.get(
+        data = self.get(
             "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
             "FHPTJ04160001",
             {
@@ -287,11 +286,12 @@ class KIS:
                 "FID_ETC_CLS_CODE": "",
             },
         )
-        # 일별 개인/외국인/기관 데이터는 output2에 들어온다.
-        rows = d.get("output2", [])
+
+        rows = data.get("output2", [])
         if isinstance(rows, dict):
             rows = [rows]
         return rows or []
+
     def chart(self,c,p):
         end=datetime.now(); start=end-timedelta(days={"D":365,"W":1095,"M":2920}[p])
         return self.get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",
@@ -316,8 +316,10 @@ def client(k,s,p):
     x=KIS(k,s,p);x.auth();return x
 @st.cache_data(ttl=10,show_spinner=False)
 def price(k,s,p,c):return client(k,s,p).price(c)
+
 @st.cache_data(ttl=300,show_spinner=False)
-def investor_flow(k,s,p,c):return client(k,s,p).investor(c)
+def investor_trade_daily(k,s,p,c):
+    return client(k,s,p).investor_trade_daily(c)
 @st.cache_data(ttl=60,show_spinner=False)
 def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
 @st.cache_data(ttl=20,show_spinner=False)
@@ -1387,13 +1389,14 @@ st.markdown("---")
 # ===== 투자자 수급 =====
 flow_error=""
 try:
-    flow_rows=investor_flow(KEY,SEC,paper,code)
+    flow_rows=investor_trade_daily(KEY,SEC,paper,code)
     flow_df=investor_df(flow_rows)
 except Exception as e:
     flow_df=pd.DataFrame()
     flow_error=str(e)
 
 st.markdown("### 👥 투자자 수급")
+st.caption("KIS · 종목별 투자자매매동향(일별) / FHPTJ04160001")
 if not flow_df.empty:
     s5=investor_summary(flow_df,5); s20=investor_summary(flow_df,20)
     c1,c2,c3=st.columns(3)
