@@ -1754,9 +1754,13 @@ st.markdown(f"""
     🤖 ChatGPT에게 물어보기
     <div class="hanav-chat-sub">현재 종목 · {_chat_stock} · OpenAI API 크레딧 사용 없음</div>
   </div>
-  <form class="hanav-chat-form" action="https://chatgpt.com/" method="get" target="_blank">
+  <form class="hanav-chat-form" action="https://chatgpt.com/" method="get" target="_blank"
+        onsubmit="var i=this.querySelector('input[name=q]'); var u=i.value.trim(); if(!u){{i.focus(); return false;}} i.value=i.dataset.context + u;">
     <input class="hanav-chat-input" type="text" name="q"
-           value="{_chat_context}"
+           value=""
+           data-context="{_chat_context}"
+           placeholder="{_chat_stock}에 대해 질문을 입력하세요"
+           autocomplete="off"
            aria-label="ChatGPT 질문" />
     <button class="hanav-chat-send" type="submit">ChatGPT에서 질문하기 ↗</button>
   </form>
