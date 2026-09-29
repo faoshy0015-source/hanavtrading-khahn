@@ -11,6 +11,7 @@ import time
 import hmac
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import html
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
@@ -1672,3 +1673,93 @@ render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트
 st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
 
 st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
+
+
+# ==================================================
+# ChatGPT 연결 패널 · OpenAI API 크레딧 사용 없음
+# - HanaV 내부에서 API를 호출하지 않습니다.
+# - 질문을 ChatGPT 웹으로 넘기며, 로그인된 ChatGPT 계정에서 대화를 이어갑니다.
+# ==================================================
+_chat_stock = html.escape(f"{api_name} ({code})", quote=True)
+_chat_context = html.escape(
+    f"HanaV Trading에서 현재 {_chat_stock} 종목을 보고 있어. "
+    f"현재가 {cur:,.0f}원, 등락률 {rate:+.2f}%야. 이 종목에 대해 질문할게: ",
+    quote=True,
+)
+
+st.markdown(f"""
+<style>
+.hanav-chat-box {{
+    position: fixed;
+    right: 22px;
+    bottom: 20px;
+    width: min(390px, calc(100vw - 34px));
+    z-index: 999998;
+    background: rgba(8, 18, 14, .97);
+    border: 1px solid #00B873;
+    border-radius: 14px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.48), 0 0 16px rgba(0,184,115,.10);
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+}}
+.hanav-chat-head {{
+    padding: 10px 13px;
+    color: #FFFFFF;
+    font-weight: 900;
+    background: linear-gradient(90deg,#0B2118,#0D1713);
+    border-bottom: 1px solid #244B3D;
+}}
+.hanav-chat-sub {{
+    margin-top: 3px;
+    color: #91A79E;
+    font-size: 11px;
+    font-weight: 600;
+}}
+.hanav-chat-form {{ padding: 10px; }}
+.hanav-chat-input {{
+    width: 100%;
+    box-sizing: border-box;
+    background: #F7FFFB;
+    color: #07100C;
+    border: 1px solid #5A7B6F;
+    border-radius: 8px;
+    padding: 10px 11px;
+    font-size: 13px;
+    outline: none;
+}}
+.hanav-chat-input:focus {{ border-color: #18D487; }}
+.hanav-chat-send {{
+    width: 100%;
+    margin-top: 8px;
+    padding: 9px 10px;
+    border: 1px solid #43FFB5;
+    border-radius: 8px;
+    background: #00B873;
+    color: #001B10;
+    font-weight: 900;
+    cursor: pointer;
+}}
+.hanav-chat-note {{
+    padding: 0 10px 10px;
+    color: #718A80;
+    font-size: 10px;
+    line-height: 1.35;
+}}
+@media (max-width: 768px) {{
+    .hanav-chat-box {{ right: 10px; bottom: 10px; width: calc(100vw - 20px); }}
+}}
+</style>
+<div class="hanav-chat-box">
+  <div class="hanav-chat-head">
+    🤖 ChatGPT에게 물어보기
+    <div class="hanav-chat-sub">현재 종목 · {_chat_stock} · OpenAI API 크레딧 사용 없음</div>
+  </div>
+  <form class="hanav-chat-form" action="https://chatgpt.com/" method="get" target="_blank">
+    <input class="hanav-chat-input" type="text" name="q"
+           value="{_chat_context}"
+           aria-label="ChatGPT 질문" />
+    <button class="hanav-chat-send" type="submit">ChatGPT에서 질문하기 ↗</button>
+  </form>
+  <div class="hanav-chat-note">질문을 보내면 ChatGPT가 새 창에서 열립니다. HanaV Trading은 OpenAI API를 호출하지 않습니다.</div>
+</div>
+""", unsafe_allow_html=True)
