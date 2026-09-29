@@ -12,6 +12,7 @@ import hmac
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import html
+import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
@@ -938,6 +939,65 @@ def earnings_top_panel_html(rows):
     )
 
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def hanav_google_news(query, limit=8):
+    """Google News RSS 최신 기사. OpenAI API를 사용하지 않는다."""
+    from urllib.parse import quote_plus
+    url = (
+        "https://news.google.com/rss/search?q="
+        + quote_plus(str(query))
+        + "&hl=ko&gl=KR&ceid=KR:ko"
+    )
+    headers={"User-Agent":"Mozilla/5.0"}
+    r=requests.get(url,headers=headers,timeout=12)
+    r.raise_for_status()
+    root=ET.fromstring(r.content)
+    out=[]
+    for item in root.findall(".//item")[:int(limit)]:
+        title=html.unescape((item.findtext("title") or "").strip())
+        link=(item.findtext("link") or "").strip()
+        pub=(item.findtext("pubDate") or "").strip()
+        source_el=item.find("source")
+        source=(source_el.text or "").strip() if source_el is not None else ""
+        if title:
+            out.append({"title":title,"link":link,"pubDate":pub,"source":source})
+    return out
+
+def hanav_news_impact(title):
+    """제목 키워드 기반의 단순 시장 영향 태그. 투자판단이 아닌 뉴스 분류용."""
+    t=str(title).lower()
+    strong=["급등","사상 최대","신고가","대규모 수주","깜짝 실적","surge","record high","beat"]
+    risk=["급락","폭락","적자","리콜","제재","관세","전쟁","해킹","파산","우려","하향","miss","plunge"]
+    watch=["금리","환율","유가","연준","fed","고용","물가","cpi","실적","수주","반도체","ai"]
+    if any(k in t for k in risk): return "🔴 주의"
+    if any(k in t for k in strong): return "🟢 긍정"
+    if any(k in t for k in watch): return "🟠 중요"
+    return "🟡 일반"
+
+def render_hanav_news(query, limit=7):
+    try:
+        items=hanav_google_news(query,limit)
+    except Exception as e:
+        st.warning(f"뉴스를 불러오지 못했습니다: {e}")
+        return
+    if not items:
+        st.caption("표시할 최신 뉴스가 없습니다.")
+        return
+    for n in items:
+        tag=hanav_news_impact(n["title"])
+        source=f' · {html.escape(n["source"])}' if n["source"] else ""
+        title=html.escape(n["title"])
+        link=html.escape(n["link"],quote=True)
+        st.markdown(
+            f'<div style="background:#0D1512;border:1px solid #29483E;border-radius:7px;'
+            f'padding:8px 10px;margin:6px 0;">'
+            f'<div style="font-size:11px;color:#9EB0A9;">{tag}{source}</div>'
+            f'<a href="{link}" target="_blank" style="color:#F1F7F4;text-decoration:none;'
+            f'font-weight:750;font-size:13px;line-height:1.4;">{title}</a></div>',
+            unsafe_allow_html=True
+        )
+
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
     # 원 단위 → 억원
@@ -1669,6 +1729,35 @@ render_analysis_card("📈 차트",analysis_sections["차트"])
 render_analysis_card("👥 수급",analysis_sections["수급"])
 render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
 render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
+
+st.markdown("---")
+_news_left, _news_right = st.columns([0.72, 1.78], gap="large")
+with _news_left:
+    st.markdown("## 📰 HanaV 뉴스")
+    st.caption("실시간 시장 뉴스 · Google News RSS · API 크레딧 사용 없음")
+    _news_mode=st.selectbox(
+        "뉴스 범위",
+        ["현재 종목","국내 증시","미국 증시","반도체","2차전지","로봇","자동차","방산"],
+        key="hanav_news_mode"
+    )
+    _news_queries={
+        "현재 종목":f"{api_name} {code} 주식",
+        "국내 증시":"코스피 코스닥 증시",
+        "미국 증시":"미국 증시 나스닥 S&P500 연준",
+        "반도체":"반도체 삼성전자 SK하이닉스 엔비디아 마이크론",
+        "2차전지":"2차전지 배터리 LG에너지솔루션 삼성SDI",
+        "로봇":"로봇 휴머노이드 로보티즈 레인보우로보틱스 두산로보틱스",
+        "자동차":"자동차 현대차 기아 전기차",
+        "방산":"방산 한화에어로스페이스 LIG넥스원 현대로템",
+    }
+    if st.button("🔄 뉴스 새로고침",key="hanav_news_refresh"):
+        hanav_google_news.clear()
+        st.rerun()
+with _news_right:
+    st.markdown(f"## 최신 뉴스 · {_news_mode}")
+    st.caption("기사 제목을 누르면 원문이 새 창에서 열립니다.")
+    render_hanav_news(_news_queries[_news_mode],8)
+
 
 st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
 
