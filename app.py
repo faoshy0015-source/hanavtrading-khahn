@@ -255,6 +255,24 @@ section[data-testid="stSidebar"] hr {border-color:#ADC7B9!important}
 @media(max-width:900px) {.gainers-grid {grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:540px) {.gainers-grid {grid-template-columns:repeat(2,minmax(0,1fr))}}
 
+
+/* Distinct section bands for scanning the dashboard. */
+.hv-section {display:flex;align-items:center;gap:10px;padding:13px 16px;margin:22px 0 10px;border-radius:9px;color:#FFFFFF!important;font-size:18px;font-weight:800;line-height:1.45;box-shadow:0 2px 6px rgba(18,55,43,.08)}
+.hv-section-market {background:linear-gradient(100deg,#006B5C,#008878);margin-top:0}
+.hv-section-stock {background:linear-gradient(100deg,#215B76,#327C94)}
+.hv-section-chart {background:linear-gradient(100deg,#304B7B,#49689D)}
+.hv-section-flow {background:linear-gradient(100deg,#544777,#726092)}
+.hv-section-analysis {background:linear-gradient(100deg,#35675D,#4C8276)}
+.hv-section-news {background:linear-gradient(100deg,#85581E,#A47530)}
+.st-key-market_overview {background:#EAF4EF;border:1px solid #B9D4C6;border-radius:12px;padding:14px 16px;margin:12px 0 20px;box-shadow:0 3px 10px rgba(20,65,47,.05)}
+.st-key-market_overview [data-testid="stCaptionContainer"] p {color:#4B6558!important}
+.st-key-market_overview button[kind="primary"],.st-key-market_overview button[data-testid="stBaseButton-primary"] {background:#007B69!important;border-color:#006A59!important;color:white!important;box-shadow:0 0 0 2px #BCDCCE}
+.st-key-market_overview button[kind="primary"] p {color:white!important}
+.st-key-market_overview button[kind="secondary"] {background:#FFFFFF!important;border:1px solid #A9CABC!important;color:#174F40!important;min-height:45px}
+.st-key-market_overview button[kind="secondary"]:hover {background:#D7EBDF!important;border-color:#008878!important}
+[data-testid="stPlotlyChart"] {background:#FFFFFF;border:1px solid #CBD8E4;border-radius:10px;padding:5px;box-shadow:0 2px 7px rgba(30,55,80,.04)}
+@media(max-width:640px) {.hv-section {font-size:16px;padding:11px 12px}.st-key-market_overview {padding:10px}}
+
 /* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
 @media (min-width: 769px) {
     section[data-testid="stSidebar"] {
@@ -1460,7 +1478,7 @@ def market_panel_html(items):
     )
 
 st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
-_gainers_slot = st.container()
+_gainers_slot = st.container(key="market_overview")
 
 if not KEY or not SEC:
     st.error("KIS_APP_KEY / KIS_APP_SECRET이 설정되지 않았습니다.")
@@ -1679,9 +1697,10 @@ if not rd.empty:
 
 
 with _gainers_slot:
+    st.markdown('<div class="hv-section hv-section-market">📈 오늘 상승률 상위 업종 TOP 5</div>', unsafe_allow_html=True)
     _rank_title, _rank_market_col, _rank_action = st.columns([3, 1.4, 1])
     with _rank_title:
-        st.markdown("#### 📈 오늘 상승률 상위 업종 TOP 5")
+        st.markdown("**시장 주도 업종**")
     with _rank_market_col:
         _sector_market = st.selectbox("업종 시장", ["코스피", "코스닥"], key="sector_rank_market", label_visibility="collapsed")
     with _rank_action:
@@ -1748,7 +1767,7 @@ with _gainers_slot:
     except Exception:
         st.info("업종 순위를 불러오지 못했습니다. 새로고침을 눌러 다시 조회해 주세요.")
 
-st.markdown("##### 🔎 선택 종목 상세")
+st.markdown('<div class="hv-section hv-section-stock">🔎 선택 종목 상세</div>', unsafe_allow_html=True)
 
 try:qv=price(KEY,SEC,paper,code)
 except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
@@ -1825,6 +1844,7 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
 </style>
 """,unsafe_allow_html=True)
 
+st.markdown('<div class="hv-section hv-section-chart">📊 주가 차트</div>', unsafe_allow_html=True)
 pername=st.selectbox("차트 주기",["일봉","주봉","월봉","15분봉","30분봉"], index=0)
 per={"일봉":"D","주봉":"W","월봉":"M"}.get(pername,pername)
 
@@ -1904,7 +1924,7 @@ except Exception as e:
     flow_df=pd.DataFrame()
     flow_error=str(e)
 
-st.markdown("### 👥 투자자 수급")
+st.markdown('<div class="hv-section hv-section-flow">👥 투자자 수급</div>', unsafe_allow_html=True)
 st.caption("KIS · 종목별 투자자매매동향(일별) / FHPTJ04160001")
 if st.button("🔄 수급 새로고침", key=f"refresh_investor_{code}", use_container_width=False):
     investor_trade_daily.clear()
@@ -1936,7 +1956,7 @@ else:
     else:
         st.info("조회된 투자자 수급 데이터가 없습니다. 기준일 또는 KIS 데이터 제공 상태를 확인해 주세요.")
 
-st.markdown("### 🤖 HanaV 분석 어시스턴트")
+st.markdown('<div class="hv-section hv-section-analysis">🤖 HanaV 분석 어시스턴트</div>', unsafe_allow_html=True)
 st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트·KIS 일별 투자자 수급을 자동으로 종합 해석합니다. AI API 비용 0원.")
 
 analysis_fund=_selected_fund if "_selected_fund" in locals() else pd.DataFrame()
@@ -1950,9 +1970,10 @@ render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
 render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
 
 st.markdown("---")
+st.markdown('<div class="hv-section hv-section-news">📰 HanaV 뉴스</div>', unsafe_allow_html=True)
 _news_left, _news_right = st.columns([0.72, 1.78], gap="large")
 with _news_left:
-    st.markdown("## 📰 HanaV 뉴스")
+    st.markdown("**뉴스 검색**")
     st.caption("실시간 시장 뉴스 · Google News RSS · API 크레딧 사용 없음")
     _news_mode=st.selectbox(
         "뉴스 범위",
@@ -1973,7 +1994,7 @@ with _news_left:
         hanav_google_news.clear()
         st.rerun()
 with _news_right:
-    st.markdown(f"## 최신 뉴스 · {_news_mode}")
+    st.markdown(f"**최신 뉴스 · {_news_mode}**")
     st.caption("기사 제목을 누르면 원문이 새 창에서 열립니다.")
     render_hanav_news(_news_queries[_news_mode],8)
 
