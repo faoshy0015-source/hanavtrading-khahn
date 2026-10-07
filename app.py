@@ -1,7 +1,7 @@
 import os
 import io
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -264,6 +264,7 @@ section[data-testid="stSidebar"] hr {border-color:#ADC7B9!important}
 .hv-section-flow {background:linear-gradient(100deg,#544777,#726092)}
 .hv-section-analysis {background:linear-gradient(100deg,#35675D,#4C8276)}
 .hv-section-news {background:linear-gradient(100deg,#85581E,#A47530)}
+.hv-section-calendar {background:linear-gradient(100deg,#2D6570,#47838C)}
 .st-key-market_overview {background:#EAF4EF;border:1px solid #B9D4C6;border-radius:12px;padding:14px 16px;margin:12px 0 20px;box-shadow:0 3px 10px rgba(20,65,47,.05)}
 .st-key-market_overview [data-testid="stCaptionContainer"] p {color:#4B6558!important}
 .st-key-market_overview button[kind="primary"],.st-key-market_overview button[data-testid="stBaseButton-primary"] {background:#007B69!important;border-color:#006A59!important;color:white!important;box-shadow:0 0 0 2px #BCDCCE}
@@ -1195,6 +1196,175 @@ def render_hanav_news(query, limit=7):
             unsafe_allow_html=True
         )
 
+
+# ==================================================
+# 시장 일정 캘린더 · Nasdaq 공개 캘린더 (API KEY 불필요)
+# - 기업 실적: /api/calendar/earnings
+# - 주요 매크로: /api/calendar/economicevents
+# ==================================================
+_HANAV_KST = timezone(timedelta(hours=9))
+_NASDAQ_CAL_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.nasdaq.com/market-activity/",
+    "Origin": "https://www.nasdaq.com",
+}
+
+def hanav_nasdaq_calendar(kind, date_iso):
+    kind = str(kind).strip().lower()
+    if kind not in {"earnings", "economicevents"}:
+        return []
+    url = f"https://api.nasdaq.com/api/calendar/{kind}?date={date_iso}"
+    r = requests.get(url, headers=_NASDAQ_CAL_HEADERS, timeout=10)
+    r.raise_for_status()
+    payload = r.json() or {}
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("rows") or []
+    return rows if isinstance(rows, list) else []
+
+
+def _hanav_marketcap_num(v):
+    try:
+        s = re.sub(r"[^0-9.\-]", "", str(v or ""))
+        return float(s) if s else 0.0
+    except Exception:
+        return 0.0
+
+
+def _hanav_earnings_time_label(v):
+    s = str(v or "").strip().lower()
+    if "pre" in s:
+        return "장전"
+    if "after" in s or "post" in s:
+        return "장후"
+    return "미정"
+
+
+def _hanav_day_label(date_iso):
+    try:
+        d = datetime.strptime(date_iso, "%Y-%m-%d").date()
+        ko = ["월", "화", "수", "목", "금", "토", "일"][d.weekday()]
+        return f"{d.month}/{d.day}({ko})"
+    except Exception:
+        return str(date_iso)
+
+
+def _hanav_macro_importance(v):
+    s = str(v or "").strip().lower()
+    try:
+        n = int(float(s))
+        if n >= 3:
+            return "★★★", 3
+        if n == 2:
+            return "★★", 2
+        if n == 1:
+            return "★", 1
+    except Exception:
+        pass
+    if "high" in s:
+        return "★★★", 3
+    if "medium" in s or "moderate" in s:
+        return "★★", 2
+    if "low" in s:
+        return "★", 1
+    return "", 0
+
+
+def _hanav_major_macro(row):
+    country = str(row.get("country", "") or "").upper().replace("_", " ").strip()
+    if country and not (
+        "UNITED STATES" in country
+        or country in {"US", "USA", "U.S.", "UNITED STATES OF AMERICA"}
+    ):
+        return False
+
+    name = str(row.get("eventName", "") or row.get("event", "") or "").strip()
+    if not name:
+        return False
+
+    _, level = _hanav_macro_importance(row.get("importance", ""))
+    major_keywords = [
+        "cpi", "consumer price", "pce", "personal consumption", "ppi", "producer price",
+        "nonfarm", "payroll", "employment", "unemployment", "jobless", "jolts",
+        "fomc", "federal reserve", "fed chair", "fed interest", "interest rate",
+        "gdp", "retail sales", "ism", "pmi", "durable goods", "consumer confidence",
+        "michigan", "industrial production", "housing starts", "existing home", "new home",
+        "trade balance", "beige book",
+    ]
+    low = name.lower()
+    return level >= 2 or any(k in low for k in major_keywords)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def hanav_calendar_window(start_iso, days):
+    start = datetime.strptime(start_iso, "%Y-%m-%d").date()
+    date_isos = [(start + timedelta(days=i)).isoformat() for i in range(int(days))]
+
+    earnings_by_date = {}
+    macro_by_date = {}
+    errors = []
+
+    jobs = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for ds in date_isos:
+            jobs.append(("earnings", ds, ex.submit(hanav_nasdaq_calendar, "earnings", ds)))
+            jobs.append(("economicevents", ds, ex.submit(hanav_nasdaq_calendar, "economicevents", ds)))
+        for kind, ds, fut in jobs:
+            try:
+                rows = fut.result()
+                if kind == "earnings":
+                    earnings_by_date[ds] = rows
+                else:
+                    macro_by_date[ds] = rows
+            except Exception as e:
+                errors.append(f"{ds} {kind}: {e}")
+                if kind == "earnings":
+                    earnings_by_date[ds] = []
+                else:
+                    macro_by_date[ds] = []
+
+    earnings_rows = []
+    for ds in date_isos:
+        day_rows = list(earnings_by_date.get(ds, []))
+        day_rows.sort(key=lambda x: _hanav_marketcap_num(x.get("marketCap")), reverse=True)
+        # 종목 수가 많은 날에도 화면을 과도하게 차지하지 않도록 시총 상위 8개만 표시
+        for row in day_rows[:8]:
+            earnings_rows.append({
+                "날짜": _hanav_day_label(ds),
+                "시각": _hanav_earnings_time_label(row.get("time")),
+                "티커": str(row.get("symbol", "") or ""),
+                "기업": str(row.get("name", "") or ""),
+                "EPS 예상": str(row.get("epsForecast", "") or "-"),
+                "시가총액": str(row.get("marketCap", "") or "-"),
+            })
+
+    macro_rows = []
+    for ds in date_isos:
+        for row in macro_by_date.get(ds, []):
+            if not _hanav_major_macro(row):
+                continue
+            imp, level = _hanav_macro_importance(row.get("importance", ""))
+            macro_rows.append({
+                "날짜": _hanav_day_label(ds),
+                "미국 현지": str(row.get("time", "") or "-"),
+                "중요도": imp or "주요",
+                "지표": str(row.get("eventName", "") or row.get("event", "") or ""),
+                "예상": str(row.get("consensus", "") or row.get("forecast", "") or "-"),
+                "이전": str(row.get("previous", "") or "-"),
+                "실제": str(row.get("actual", "") or "-"),
+                "_level": level,
+                "_date_iso": ds,
+            })
+
+    macro_rows.sort(key=lambda x: (x.get("_date_iso", ""), -x.get("_level", 0), x.get("미국 현지", "")))
+    for row in macro_rows:
+        row.pop("_level", None)
+        row.pop("_date_iso", None)
+
+    return earnings_rows, macro_rows, errors
+
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
     # 원 단위 → 억원
@@ -2060,100 +2230,84 @@ with _news_right:
     render_hanav_news(_news_queries[_news_mode],8)
 
 
+# ==================================================
+# 주요 일정 캘린더
+# ==================================================
+st.markdown('<div class="hv-section hv-section-calendar">📅 주요 일정 캘린더</div>', unsafe_allow_html=True)
+_cal_c1, _cal_c2, _cal_c3 = st.columns([1.05, 0.75, 0.65])
+with _cal_c1:
+    _cal_start = st.date_input(
+        "기준일",
+        value=datetime.now(_HANAV_KST).date(),
+        key="hanav_calendar_start",
+        format="YYYY-MM-DD",
+    )
+with _cal_c2:
+    _cal_days = st.selectbox("표시 기간", [3, 5, 7], index=2, format_func=lambda x: f"향후 {x}일", key="hanav_calendar_days")
+with _cal_c3:
+    st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+    if st.button("🔄 일정 새로고침", key="hanav_calendar_refresh", use_container_width=True):
+        hanav_calendar_window.clear()
+        st.rerun()
+
+try:
+    _earn_rows, _macro_rows, _cal_errors = hanav_calendar_window(_cal_start.isoformat(), int(_cal_days))
+except Exception as _cal_e:
+    _earn_rows, _macro_rows, _cal_errors = [], [], [str(_cal_e)]
+
+_cal_left, _cal_right = st.columns([1.28, 1.0], gap="large")
+with _cal_left:
+    st.markdown("**🏢 주요 기업 실적 발표**")
+    st.caption("미국 상장사 · 날짜별 시가총액 상위 8개 · 장전/장후 구분")
+    if _earn_rows:
+        _earn_df = pd.DataFrame(_earn_rows)
+        st.dataframe(
+            _earn_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(430, 38 + 35 * min(len(_earn_df), 11)),
+            column_config={
+                "날짜": st.column_config.TextColumn("날짜", width="small"),
+                "시각": st.column_config.TextColumn("시각", width="small"),
+                "티커": st.column_config.TextColumn("티커", width="small"),
+                "기업": st.column_config.TextColumn("기업", width="large"),
+                "EPS 예상": st.column_config.TextColumn("EPS 예상", width="small"),
+                "시가총액": st.column_config.TextColumn("시가총액", width="medium"),
+            },
+        )
+    else:
+        st.info("선택 기간에 표시할 주요 기업 실적 일정이 없거나 데이터를 불러오지 못했습니다.")
+
+with _cal_right:
+    st.markdown("**🌐 미국 주요 매크로 발표**")
+    st.caption("CPI·PCE·고용·FOMC·GDP·ISM·소매판매 등 시장 영향도가 높은 일정")
+    if _macro_rows:
+        _macro_df = pd.DataFrame(_macro_rows)
+        st.dataframe(
+            _macro_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(430, 38 + 35 * min(len(_macro_df), 11)),
+            column_config={
+                "날짜": st.column_config.TextColumn("날짜", width="small"),
+                "미국 현지": st.column_config.TextColumn("미국 현지", width="small"),
+                "중요도": st.column_config.TextColumn("중요도", width="small"),
+                "지표": st.column_config.TextColumn("지표", width="large"),
+                "예상": st.column_config.TextColumn("예상", width="small"),
+                "이전": st.column_config.TextColumn("이전", width="small"),
+                "실제": st.column_config.TextColumn("실제", width="small"),
+            },
+        )
+    else:
+        st.info("선택 기간에 표시할 미국 주요 매크로 일정이 없거나 데이터를 불러오지 못했습니다.")
+
+st.caption("※ 일정 데이터: Nasdaq Calendar · 기업 실적은 날짜별 시가총액 상위 종목 중심 · 매크로 시간은 미국 현지 표기 · 외부 데이터 제공 구조 변경 시 일시적으로 조회가 제한될 수 있습니다.")
+if _cal_errors:
+    with st.expander("일정 데이터 연결 상태", expanded=False):
+        st.caption("일부 날짜의 외부 일정 조회가 실패했습니다. 새로고침 후 다시 시도해 주세요.")
+        st.code("\n".join(_cal_errors[:6]))
+
+
 st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
 
 st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
-
-
-# ==================================================
-# ChatGPT 연결 패널 · OpenAI API 크레딧 사용 없음
-# - HanaV 내부에서 API를 호출하지 않습니다.
-# - 질문을 ChatGPT 웹으로 넘기며, 로그인된 ChatGPT 계정에서 대화를 이어갑니다.
-# ==================================================
-_chat_stock = html.escape(f"{api_name} ({code})", quote=True)
-_chat_context = html.escape(
-    f"HanaV Trading에서 현재 {_chat_stock} 종목을 보고 있어. "
-    f"현재가 {cur:,.0f}원, 등락률 {rate:+.2f}%야. 이 종목에 대해 질문할게: ",
-    quote=True,
-)
-
-st.markdown(f"""
-<style>
-.hanav-chat-box {{
-    position: fixed;
-    right: 22px;
-    bottom: 20px;
-    width: min(390px, calc(100vw - 34px));
-    z-index: 999998;
-    background: rgba(255, 255, 255, .98);
-    border: 1px solid #008878;
-    border-radius: 14px;
-    box-shadow: 0 12px 34px rgba(0,0,0,.48), 0 0 16px rgba(0,184,115,.10);
-    overflow: hidden;
-    font-family: Arial, sans-serif;
-}}
-.hanav-chat-head {{
-    padding: 10px 13px;
-    color: #203D35;
-    font-weight: 900;
-    background: linear-gradient(90deg,#E0F0E8,#F4F9F6);
-    border-bottom: 1px solid #C8DBD3;
-}}
-.hanav-chat-sub {{
-    margin-top: 3px;
-    color: #60766E;
-    font-size: 11px;
-    font-weight: 600;
-}}
-.hanav-chat-form {{ padding: 10px; }}
-.hanav-chat-input {{
-    width: 100%;
-    box-sizing: border-box;
-    background: #FFFFFF;
-    color: #07100C;
-    border: 1px solid #5A7B6F;
-    border-radius: 8px;
-    padding: 10px 11px;
-    font-size: 13px;
-    outline: none;
-}}
-.hanav-chat-input:focus {{ border-color: #008878; }}
-.hanav-chat-send {{
-    width: 100%;
-    margin-top: 8px;
-    padding: 9px 10px;
-    border: 1px solid #008878;
-    border-radius: 8px;
-    background: #008878;
-    color: white;
-    font-weight: 900;
-    cursor: pointer;
-}}
-.hanav-chat-note {{
-    padding: 0 10px 10px;
-    color: #687E74;
-    font-size: 10px;
-    line-height: 1.35;
-}}
-@media (max-width: 768px) {{
-    .hanav-chat-box {{ right: 10px; bottom: 10px; width: calc(100vw - 20px); }}
-}}
-</style>
-<div class="hanav-chat-box">
-  <div class="hanav-chat-head">
-    🤖 ChatGPT에게 물어보기
-    <div class="hanav-chat-sub">현재 종목 · {_chat_stock} · OpenAI API 크레딧 사용 없음</div>
-  </div>
-  <form class="hanav-chat-form" action="https://chatgpt.com/" method="get" target="_blank"
-        onsubmit="var i=this.querySelector('input[name=q]'); var u=i.value.trim(); if(!u){{i.focus(); return false;}} i.value=i.dataset.context + u;">
-    <input class="hanav-chat-input" type="text" name="q"
-           value=""
-           data-context="{_chat_context}"
-           placeholder="{_chat_stock}에 대해 질문을 입력하세요"
-           autocomplete="off"
-           aria-label="ChatGPT 질문" />
-    <button class="hanav-chat-send" type="submit">ChatGPT에서 질문하기 ↗</button>
-  </form>
-  <div class="hanav-chat-note">질문을 보내면 ChatGPT가 새 창에서 열립니다. HanaV Trading은 OpenAI API를 호출하지 않습니다.</div>
-</div>
-""", unsafe_allow_html=True)
