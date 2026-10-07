@@ -1,1917 +1,2352 @@
-import os
-import io
-import zipfile
-from datetime import datetime, timedelta
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import requests
 import streamlit as st
-import time
+import altair as alt
+import os
 import hmac
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
-import html
-import xml.etree.ElementTree as ET
+import requests
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
+from html.parser import HTMLParser
 
-st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title='ETF Finder', page_icon='🧭', layout='wide')
 
+st.markdown('''
+<style>
+:root {color-scheme:light;--primary-color:#008878;--background-color:#F4F8F7;--secondary-background-color:#EDF5F2;--text-color:#203D35}
+.stApp,[data-testid="stAppViewContainer"]{background:#F4F8F7;color:#203D35}
+.block-container{max-width:1500px;padding-top:1rem}
+header[data-testid="stHeader"]{background:#F4F8F7}
+.hero{background:linear-gradient(105deg,#005B51 0%,#008878 65%,#DCEFE6 100%);border:1px solid #B8D6CA;border-left:6px solid #008878;padding:18px 22px;border-radius:10px;margin-bottom:14px;box-shadow:0 2px 8px rgba(20,65,47,.06)}
+.hero h1{margin:0;color:white!important;font-size:30px}.hero p{margin:6px 0 0;color:#E5F3EE!important}
+.step{background:linear-gradient(90deg,#DCEFE6,#F4F9F6);border:1px solid #C4DCD0;border-radius:9px;padding:10px 12px;margin:5px 0;color:#175447;font-weight:750}
+.result{background:white;border:1px solid #CFDFD9;border-left:4px solid #008878;border-radius:9px;padding:12px;margin:8px 0}
+.muted,[data-testid="stCaptionContainer"]{color:#60766E;font-size:12px}
+h1,h2,h3,h4,[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p,[data-testid="stMarkdownContainer"]{color:#203D35}
+section[data-testid="stSidebar"]{background:#EDF5F2;border-right:1px solid #CFDFD9}
+[data-baseweb="input"],[data-baseweb="input"]>div,[data-baseweb="select"]>div,[data-baseweb="textarea"],[data-baseweb="popover"],[role="listbox"],[role="option"]{background:white!important;color:#203D35!important}
+input,textarea,[data-baseweb="select"] span{color:#203D35!important;caret-color:#008878}
+[data-baseweb="select"] svg{fill:#536F64}
+.stButton>button[kind="secondary"],button[data-testid="stBaseButton-secondary"]{background:#FFFFFF!important;color:#205D4D!important;border:1px solid #C8DBD3!important;box-shadow:none!important}
+.stButton>button[kind="secondary"]:hover,button[data-testid="stBaseButton-secondary"]:hover{background:#E5F2EC!important;color:#006F62!important;border-color:#008878!important}
+.stButton>button[kind="primary"],button[data-testid="stBaseButton-primary"]{background:#008878!important;color:white!important;border:1px solid #008878!important;font-weight:750}
+.stButton>button[kind="primary"] p{color:white!important}
+.stButton>button[kind="primary"]:hover{background:#006F62!important}
+[data-testid="stMetric"]{background:white;border:1px solid #D4E3DC;border-top:3px solid #008878;border-radius:9px;padding:12px}
+[data-testid="stMetricLabel"],[data-testid="stMetricValue"]{color:#203D35}
+[data-testid="stExpander"]{background:white;border:1px solid #CFDFD9;border-radius:9px}
+[data-testid="stExpander"] summary{color:#203D35}
+[data-baseweb="tab"]{color:#536F64}
+[data-baseweb="tab"][aria-selected="true"]{background:#E3F1EB;color:#007B69}
+[data-baseweb="tab-highlight"]{background:#008878}
+[data-testid="stDataFrame"]{border:1px solid #CFDFD9;border-radius:7px;overflow:hidden}
+hr{border-color:#D4E3DC}
+</style>''', unsafe_allow_html=True)
 
-st.markdown("""<style>
-:root { color-scheme:light; --text-color:#203D35; --background-color:#F4F8F7; --secondary-background-color:#EDF5F2; --primary-color:#008878; }
-.stApp, [data-testid="stAppViewContainer"] { background:#F4F8F7; color:#203D35; }
-[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p, [data-testid="stMarkdownContainer"] > p,
-h1,h2,h3,h4,[data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:#203D35; }
-[data-baseweb="input"], [data-baseweb="input"] > div, [data-baseweb="select"] > div,
-[data-baseweb="textarea"], [data-baseweb="popover"], [role="listbox"], [role="option"] { background:#FFFFFF !important; color:#203D35 !important; }
-input,textarea { color:#203D35 !important; caret-color:#008878; }
-button[kind="secondary"], [data-testid="stBaseButton-secondary"] { background:#FFFFFF; color:#205D4D; border:1px solid #C8DBD3; }
-button[kind="secondary"]:hover { background:#E5F2EC; border-color:#008878; }
-[data-testid="stExpander"] { background:#FFFFFF; border:1px solid #CFDFD9; border-radius:8px; }
-[data-testid="stExpander"] summary { color:#203D35; }
-[data-baseweb="tab"] { color:#536F64; }
-[data-baseweb="tab"][aria-selected="true"] { color:#007B69; background:#E3F1EB; }
-[data-testid="stMetric"] { background:#FFFFFF; border:1px solid #D4E3DC; border-radius:8px; padding:10px; }
-</style>""", unsafe_allow_html=True)
-
-# ==================================================
-# APP PASSWORD LOGIN
-# Streamlit Cloud > App settings > Secrets:
-# APP_PASSWORD = "원하는 비밀번호"
-# ==================================================
-def _get_app_password():
+# Password gate: configure APP_PASSWORD in this app's Streamlit Secrets.
+def _etf_app_password():
     try:
-        return str(st.secrets["APP_PASSWORD"])
+        value = st.secrets.get('APP_PASSWORD', '')
+        return value if isinstance(value, str) else ''
     except Exception:
-        return ""
+        return ''
 
-def _check_app_password():
-    expected=_get_app_password()
-    entered=str(st.session_state.get("_hanav_password",""))
-    ok=bool(expected) and hmac.compare_digest(entered, expected)
-    st.session_state["_hanav_authenticated"]=ok
-    st.session_state["_hanav_login_error"]=not ok
-    st.session_state["_hanav_password"]=""
 
-def _logout_hanav():
-    st.session_state["_hanav_authenticated"]=False
-    st.session_state["_hanav_login_error"]=False
+def _etf_check_password():
+    expected = _etf_app_password()
+    entered = str(st.session_state.get('_etf_password', ''))
+    accepted = bool(expected) and hmac.compare_digest(
+        entered.encode('utf-8'), expected.encode('utf-8')
+    )
+    st.session_state['_etf_authenticated'] = accepted
+    st.session_state['_etf_login_error'] = not accepted
+    st.session_state['_etf_password'] = ''
 
-st.session_state.setdefault("_hanav_authenticated",False)
-st.session_state.setdefault("_hanav_login_error",False)
 
-if not st.session_state["_hanav_authenticated"]:
-    st.markdown("""
-    <div style="max-width:430px;margin:11vh auto 22px;text-align:center;">
-      <div style="font-size:34px;font-weight:950;color:#008878;">HanaV Trading</div>
-      <div style="margin-top:7px;color:#60766E;font-size:13px;font-weight:650;">Private Investment Dashboard</div>
-      <div style="margin-top:4px;color:#6F847C;font-size:11px;">Designed &amp; Built by K.H. Ahn</div>
-    </div>""",unsafe_allow_html=True)
+def _etf_logout():
+    # Clear per-session selections and results together with authentication.
+    for key in list(st.session_state):
+        del st.session_state[key]
 
-    if not _get_app_password():
-        st.error("APP_PASSWORD가 설정되지 않았습니다. Streamlit Cloud의 App settings → Secrets에 APP_PASSWORD를 추가해 주세요.")
-        st.stop()
 
-    _l,_c,_r=st.columns([1,1.15,1])
-    with _c:
-        st.text_input("비밀번호",type="password",key="_hanav_password",
-                      placeholder="비밀번호를 입력하세요",on_change=_check_app_password)
-        if st.button("🔐 로그인",use_container_width=True,key="_hanav_login_button"):
-            _check_app_password()
-            st.rerun()
-        if st.session_state.get("_hanav_login_error",False):
-            st.error("비밀번호가 올바르지 않습니다.")
+st.session_state.setdefault('_etf_authenticated', False)
+st.session_state.setdefault('_etf_login_error', False)
+
+if not _etf_app_password():
+    st.error('APP_PASSWORD가 설정되지 않았습니다. 이 앱의 Streamlit Secrets에 APP_PASSWORD를 추가해 주세요.')
     st.stop()
 
+if not st.session_state['_etf_authenticated']:
+    st.markdown('''
+    <div style="max-width:430px;margin:11vh auto 22px;text-align:center;">
+      <div style="font-size:34px;font-weight:950;color:#008878;">ETF Finder</div>
+      <div style="margin-top:7px;color:#536F64;font-size:13px;font-weight:650;">Private Investment Dashboard</div>
+      <div style="margin-top:4px;color:#60766E;font-size:11px;">Designed &amp; Built by K.H. Ahn</div>
+    </div>''', unsafe_allow_html=True)
+    _login_left, _login_center, _login_right = st.columns([1, 1.15, 1])
+    with _login_center:
+        with st.form('_etf_login_form'):
+            st.text_input('비밀번호', type='password', key='_etf_password',
+                          placeholder='비밀번호를 입력하세요')
+            st.form_submit_button('🔐 로그인', type='primary',
+                                  use_container_width=True, on_click=_etf_check_password)
+        if st.session_state.get('_etf_login_error', False):
+            st.error('비밀번호가 올바르지 않습니다.')
+    st.stop()
 
-REAL_URL="https://openapi.koreainvestment.com:9443"
-PAPER_URL="https://openapivts.koreainvestment.com:29443"
-
-st.markdown("""<style>
-:root {
-    --hana-green:#008878;
-    --hana-green-bright:#008878;
-    --hana-green-dark:#087A52;
-    --bg:#F4F8F7;
-    --panel:#FFFFFF;
-    --panel-2:#EDF5F2;
-    --border:#CFDFD9;
-    --text:#203D35;
-    --muted:#60766E;
-}
-html, body, [data-testid="stAppViewContainer"], .stApp {
-    background:var(--bg) !important; color:var(--text) !important; min-height:100vh !important;
-}
-html, body { margin:0 !important; padding:0 !important; }
-header[data-testid="stHeader"] { background:transparent !important; height:2.5rem !important; }
-[data-testid="stToolbar"], [data-testid="stAppToolbar"], [data-testid="stDecoration"], #MainMenu, footer,
-.viewerBadge_container__1QSob { display:none !important; }
-[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display:flex !important; visibility:visible !important; opacity:1 !important; z-index:999999 !important; }
-[data-testid="stAppViewContainer"] > .main { min-height:100vh !important; padding-top:0 !important; }
-.main .block-container, [data-testid="stMainBlockContainer"] {
-    max-width:100% !important; min-height:100vh !important; padding:.45rem .75rem .65rem .75rem !important;
-}
-section[data-testid="stSidebar"] {
-    background:#EDF5F2 !important; border-right:1px solid #CFDFD9 !important; top:0 !important; height:100vh !important;
-}
-section[data-testid="stSidebar"] > div { height:100vh !important; padding-top:.35rem !important; }
-section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 {
-    color:#00695F !important;
-}
-section[data-testid="stSidebar"] hr { border-color:#CFDFD9 !important; }
-.title {
-    background:linear-gradient(90deg,#E2F1EB 0%,#F3F8F5 55%,#FFFFFF 100%);
-    border:1px solid #B8D6CA; border-left:4px solid var(--hana-green-bright);
-    padding:11px 15px; font-size:20px; font-weight:800; color:#163F35; letter-spacing:.2px;
-}
-.head {
-    background:linear-gradient(90deg,#DDEFE8 0%,#F0F7F3 100%);
-    border:1px solid #BCD9CE; border-left:4px solid var(--hana-green-bright);
-    padding:10px 13px; font-weight:800; color:#174F43;
-}
-.box {
-    background:#FFFFFF; border:1px solid #C8DBD3; border-radius:6px; padding:9px; text-align:center;
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.02);
-}
-.lab { color:#60766E; font-size:11px; font-weight:600; }
-.val { color:#203D35; font-size:16px; font-weight:800; }
-/* 입력창/셀렉트 가독성 */
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input {
-    background:#F4F7F5 !important; color:#14201C !important; border-color:#78958A !important;
-}
-[data-baseweb="input"] input, [data-baseweb="select"] input { color:#14201C !important; }
-[data-baseweb="select"] svg { fill:#28483D !important; }
-/* 버튼: 하나 그린 포인트 */
-.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] {
-    background:#008878 !important; color:white !important; border:1px solid #008878 !important; font-weight:800 !important;
-}
-.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover {
-    background:#006F62 !important; border-color:#A9CFC0 !important;
-}
-/* 슬라이더/토글 포인트 */
-[data-baseweb="slider"] [role="slider"] { background:#008878 !important; }
-[data-testid="stToggle"] [data-checked="true"] { background:#008878 !important; }
-/* 데이터프레임/알림 */
-[data-testid="stDataFrame"] { border:1px solid #CFDFD9; border-radius:5px; overflow:hidden; }
-[data-testid="stAlert"] { border-color:#C8DBD3 !important; }
-/* 캡션과 보조 텍스트 */
-[data-testid="stCaptionContainer"], .stCaption { color:#60766E !important; }
-/* 스크롤바 */
-::-webkit-scrollbar { width:9px; height:9px; }
-::-webkit-scrollbar-track { background:#F4F8F7; }
-::-webkit-scrollbar-thumb { background:#C8DBD3; border-radius:8px; }
-::-webkit-scrollbar-thumb:hover { background:#008878; }
-
-/* ===== HTS HIGH-CONTRAST OVERRIDES ===== */
-.stApp, [data-testid="stAppViewContainer"] { background:#F4F8F7 !important; color:#203D35 !important; }
-section[data-testid="stSidebar"] { background:#EDF5F2 !important; border-right:1px solid #008878 !important; }
-.title { background:#E3F1EB !important; border:1px solid #008878 !important; border-left:5px solid #008878 !important; color:#203D35 !important; box-shadow:0 0 12px rgba(0,201,123,.12); }
-.head { background:#E7F3ED !important; border:1px solid #008878 !important; border-left:5px solid #008878 !important; color:#203D35 !important; }
-.box { background:#FFFFFF !important; border:1px solid #CADDD5 !important; border-top:2px solid #008878 !important; }
-.lab { color:#536F64 !important; font-weight:700 !important; }
-.val { color:#203D35 !important; font-size:17px !important; }
-section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span { color:#29483D !important; }
-section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color:#007B69 !important; }
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background:#F8FFFC !important; color:#07100C !important; border:1px solid #008878 !important; }
-[data-baseweb="select"] * { color:#07100C !important; }
-.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] { background:#008878 !important; color:#001B10 !important; border:1px solid #008878 !important; font-weight:900 !important; }
-.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { background:#006F62 !important; color:#00130C !important; }
-[data-testid="stDataFrame"] { border:1px solid #008878 !important; }
-hr { border-color:#CFDFD9 !important; }
-
-/* 오늘의 시장 새로고침 버튼: 흰색 배경 제거 */
-.st-key-refresh_today_market button {
-    background: transparent !important;
-    color: #29483D !important;
-    border: 1px solid #C8DBD3 !important;
-    font-weight: 800 !important;
-}
-.st-key-refresh_today_market button:hover {
-    background: rgba(0, 184, 115, 0.08) !important;
-    color: #007B69 !important;
-    border-color: #008878 !important;
-}
-
-.st-key-refresh_earnings_top button {
-    background: transparent !important;
-    color: #29483D !important;
-    border: 1px solid #C8DBD3 !important;
-    font-weight: 800 !important;
-}
-.st-key-refresh_earnings_top button:hover {
-    background: rgba(0, 184, 115, 0.08) !important;
-    color: #007B69 !important;
-    border-color: #008878 !important;
-}
+_login_spacer, _logout_col = st.columns([5, 1])
+with _logout_col:
+    st.button('🔒 로그아웃', key='_etf_logout_button',
+              use_container_width=True, on_click=_etf_logout)
 
 
+st.markdown('''<div class="hero"><h1>🧭 ETF Finder</h1><p>원하는 투자대상을 따라가면 조건에 맞는 ETF를 찾는 탐색 엔진 </p></div>''', unsafe_allow_html=True)
 
-/* HanaV light palette: mint surfaces and a deep teal brand header. */
-.title { background:linear-gradient(105deg,#005B51 0%,#008878 58%,#DCEFE6 100%) !important; color:white !important; border:1px solid #B8D6CA !important; border-left:5px solid #008878 !important; border-radius:10px; padding:18px 16px; box-shadow:0 2px 8px rgba(20,65,47,.06); }
-.head { background:linear-gradient(90deg,#DCEFE6,#F4F9F6) !important; color:#175447 !important; border-color:#C4DCD0 !important; border-radius:7px; }
-.box { background:#FFFFFF !important; box-shadow:0 2px 6px rgba(20,65,47,.04); }
-.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"],
-.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { color:white !important; }
-section[data-testid="stSidebar"] button[kind="primary"] p { color:white !important; }
-
-
-/* Sidebar readability: dark labels, distinct controls and legible disabled values. */
-section[data-testid="stSidebar"] {background:#E5EFEA!important;border-right:1px solid #A9C3B7!important}
-section[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
-section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
-section[data-testid="stSidebar"] label p,
-section[data-testid="stSidebar"] label span {color:#142E25!important;font-size:14px!important;font-weight:700!important;opacity:1!important}
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3,
-section[data-testid="stSidebar"] h5 {color:#064B3C!important;font-weight:850!important;background:#D1E5DA;border-left:4px solid #007B69;border-radius:5px;padding:9px 10px!important}
-section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {color:#435D51!important;font-size:12px!important;opacity:1!important}
-section[data-testid="stSidebar"] [data-baseweb="input"],
-section[data-testid="stSidebar"] [data-baseweb="input"]>div,
-section[data-testid="stSidebar"] [data-baseweb="select"]>div {background:#FFFFFF!important;border-color:#91B3A2!important}
-section[data-testid="stSidebar"] input,
-section[data-testid="stSidebar"] [data-baseweb="select"] span,
-section[data-testid="stSidebar"] [data-baseweb="select"] div {color:#142E25!important;font-weight:650!important}
-section[data-testid="stSidebar"] input:disabled {background:#DFE7E2!important;color:#52665B!important;-webkit-text-fill-color:#52665B!important;opacity:1!important;cursor:not-allowed}
-section[data-testid="stSidebar"] [data-baseweb="input"]:has(input:disabled),
-section[data-testid="stSidebar"] [data-baseweb="input"]:has(input:disabled)>div {background:#DFE7E2!important;border-color:#B7C6BD!important}
-section[data-testid="stSidebar"] input::placeholder {color:#62786B!important;opacity:1}
-section[data-testid="stSidebar"] [data-testid="stCheckbox"] {padding:5px 8px;background:#F7FAF8;border:1px solid #C0D3C8;border-radius:6px}
-section[data-testid="stSidebar"] [data-testid="stCheckbox"]:has(input:checked) {background:#CEE8DA;border-color:#007B69}
-section[data-testid="stSidebar"] [data-testid="stCheckbox"] label:has(input:checked) p {color:#004E3D!important;font-weight:800!important}
-section[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMin"],
-section[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMax"] {color:#435D51!important}
-section[data-testid="stSidebar"] button[kind="primary"],
-section[data-testid="stSidebar"] button[kind="primary"] p,
-section[data-testid="stSidebar"] button[kind="primary"] span {color:#FFFFFF!important;font-weight:800!important}
-section[data-testid="stSidebar"] hr {border-color:#ADC7B9!important}
-
-/* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
-@media (min-width: 769px) {
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        transform: translateX(0) !important;
-        left: 0 !important;
-        min-width: 21rem !important;
-        width: 21rem !important;
-        max-width: 21rem !important;
-    }
-
-    section[data-testid="stSidebar"] > div {
-        display: block !important;
-        visibility: visible !important;
-        min-width: 21rem !important;
-        width: 21rem !important;
-        max-width: 21rem !important;
-    }
-
-    [data-testid="stSidebarContent"] {
-        display: block !important;
-        visibility: visible !important;
-        min-width: 21rem !important;
-        width: 21rem !important;
-    }
-
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        z-index: 999999 !important;
-    }
-}
-
-</style>""",unsafe_allow_html=True)
-
-def secret(k):
-    try:
-        if k in st.secrets:return str(st.secrets[k]).strip()
-    except: pass
-    return os.getenv(k,"").strip()
-
-KEY,SEC=secret("KIS_APP_KEY"),secret("KIS_APP_SECRET")
-
-MASTER_URLS = {
-    "KOSPI": "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
-    "KOSDAQ": "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
-}
-
-# KIS 공식 종목 마스터 파일의 고정폭 정의.
-KOSPI_WIDTHS = [2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
-KOSPI_COLS = ['그룹코드','시가총액규모','지수업종대분류','지수업종중분류','지수업종소분류','제조업','저유동성','지배구조지수종목','KOSPI200섹터업종','KOSPI100','KOSPI50','KRX','ETP','ELW발행','KRX100','KRX자동차','KRX반도체','KRX바이오','KRX은행','SPAC','KRX에너지화학','KRX철강','단기과열','KRX미디어통신','KRX건설','Non1','KRX증권','KRX선박','KRX섹터_보험','KRX섹터_운송','SRI','기준가','매매수량단위','시간외수량단위','거래정지','정리매매','관리종목','시장경고','경고예고','불성실공시','우회상장','락구분','액면변경','증자구분','증거금비율','신용가능','신용기간','전일거래량','액면가','상장일자','상장주수','자본금','결산월','공모가','우선주','공매도과열','이상급등','KRX300','KOSPI','매출액','영업이익','경상이익','당기순이익','ROE','기준년월','시가총액','그룹사코드','회사신용한도초과','담보대출가능','대주가능']
-KOSDAQ_WIDTHS = [2,1,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,9,5,5,1,1,1,2,1,1,1,2,2,2,3,1,3,12,12,8,15,21,2,7,1,1,1,1,9,9,9,5,9,8,9,3,1,1,1]
-KOSDAQ_COLS = ['증권그룹구분코드','시가총액 규모 구분 코드 유가','지수업종 대분류 코드','지수 업종 중분류 코드','지수업종 소분류 코드','벤처기업 여부 (Y/N)','저유동성종목 여부','KRX 종목 여부','ETP 상품구분코드','KRX100 종목 여부 (Y/N)','KRX 자동차 여부','KRX 반도체 여부','KRX 바이오 여부','KRX 은행 여부','기업인수목적회사여부','KRX 에너지 화학 여부','KRX 철강 여부','단기과열종목구분코드','KRX 미디어 통신 여부','KRX 건설 여부','(코스닥)투자주의환기종목여부','KRX 증권 구분','KRX 선박 구분','KRX섹터지수 보험여부','KRX섹터지수 운송여부','KOSDAQ150지수여부 (Y,N)','주식 기준가','정규 시장 매매 수량 단위','시간외 시장 매매 수량 단위','거래정지 여부','정리매매 여부','관리 종목 여부','시장 경고 구분 코드','시장 경고위험 예고 여부','불성실 공시 여부','우회 상장 여부','락구분 코드','액면가 변경 구분 코드','증자 구분 코드','증거금 비율','신용주문 가능 여부','신용기간','전일 거래량','주식 액면가','주식 상장 일자','상장 주수(천)','자본금','결산 월','공모 가격','우선주 구분 코드','공매도과열종목여부','이상급등종목여부','KRX300 종목 여부 (Y/N)','매출액','영업이익','경상이익','단기순이익','ROE(자기자본이익률)','기준년월','전일기준 시가총액 (억)','그룹사 코드','회사신용한도초과여부','담보대출가능여부','대주가능여부']
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def load_stock_master():
-    """KIS 공식 KOSPI/KOSDAQ 마스터에서 종목명 + ROE + 전일거래량을 읽는다."""
-    frames=[]
-    for market,url in MASTER_URLS.items():
-        r=requests.get(url,timeout=20); r.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-            mst_name=next(n for n in zf.namelist() if n.lower().endswith('.mst'))
-            text=zf.read(mst_name).decode('cp949',errors='replace')
-        suffix_len=228 if market=='KOSPI' else 222
-        widths=KOSPI_WIDTHS if market=='KOSPI' else KOSDAQ_WIDTHS
-        cols=KOSPI_COLS if market=='KOSPI' else KOSDAQ_COLS
-        items=[]; suffixes=[]
-        for row in text.splitlines():
-            if len(row)<=suffix_len: continue
-            prefix=row[:-suffix_len]; suffix=row[-suffix_len:]
-            short_code=prefix[:9].strip(); std_code=prefix[9:21].strip(); stock_name=prefix[21:].strip()
-            code=short_code[-6:] if len(short_code)>=6 else short_code.zfill(6)
-            if len(code)==6 and code.isdigit() and stock_name:
-                items.append({'code':code,'name':stock_name,'market':market,'std_code':std_code})
-                suffixes.append(suffix)
-        if not items: continue
-        meta=pd.read_fwf(io.StringIO('\n'.join(suffixes)),widths=widths,names=cols,dtype=str)
-        base=pd.DataFrame(items).reset_index(drop=True)
-        if market=='KOSPI':
-            base['roe']=pd.to_numeric(meta['ROE'],errors='coerce')
-            base['prev_volume']=pd.to_numeric(meta['전일거래량'],errors='coerce')
-            base['master_cap']=pd.to_numeric(meta['시가총액'],errors='coerce')
-        else:
-            base['roe']=pd.to_numeric(meta['ROE(자기자본이익률)'],errors='coerce')
-            base['prev_volume']=pd.to_numeric(meta['전일 거래량'],errors='coerce')
-            base['master_cap']=pd.to_numeric(meta['전일기준 시가총액 (억)'],errors='coerce')
-        frames.append(base)
-    if not frames:
-        return pd.DataFrame(columns=['code','name','market','std_code','roe','prev_volume','master_cap'])
-    master=pd.concat(frames,ignore_index=True)
-    return master.drop_duplicates(subset=['code','market']).sort_values(['name','code']).reset_index(drop=True)
-
-def num(v):
-    try:return float(str(v or 0).replace(",",""))
-    except:return 0.0
-
-class KIS:
-    def __init__(self,k,s,paper=False):
-        self.k,self.s=k,s; self.base=PAPER_URL if paper else REAL_URL; self.token=""
-    def auth(self):
-        r=requests.post(self.base+"/oauth2/tokenP",json={"grant_type":"client_credentials","appkey":self.k,"appsecret":self.s},timeout=15)
-        d=r.json()
-        if not r.ok or not d.get("access_token"):raise RuntimeError(d.get("error_description") or d.get("msg1") or r.text[:250])
-        self.token=d["access_token"]
-    def get(self,path,tr,params):
-        if not self.token:self.auth()
-        h={"content-type":"application/json; charset=utf-8","authorization":f"Bearer {self.token}",
-           "appkey":self.k,"appsecret":self.s,"tr_id":tr,"custtype":"P"}
-        r=requests.get(self.base+path,headers=h,params=params,timeout=15)
-        try:d=r.json()
-        except:raise RuntimeError(r.text[:250])
-        if d.get("msg_cd")=="EGW00123":
-            self.auth(); h["authorization"]=f"Bearer {self.token}"
-            d=requests.get(self.base+path,headers=h,params=params,timeout=15).json()
-        if str(d.get("rt_cd","0"))!="0":raise RuntimeError(f"{d.get('msg_cd','')} {d.get('msg1','API 오류')}")
-        return d
-    def price(self,c):
-        return self.get("/uapi/domestic-stock/v1/quotations/inquire-price","FHKST01010100",
-                        {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c}).get("output",{})
-    def investor_trade_daily(self,c):
-        """KIS 종목별 투자자매매동향(일별) - 개인/외국인/기관 순매수."""
-        ref = datetime.now() - timedelta(days=1)
-        while ref.weekday() >= 5:
-            ref -= timedelta(days=1)
-
-        data = self.get(
-            "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
-            "FHPTJ04160001",
-            {
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": str(c).zfill(6),
-                "FID_INPUT_DATE_1": ref.strftime("%Y%m%d"),
-                "FID_ORG_ADJ_PRC": "",
-                "FID_ETC_CLS_CODE": "",
-            },
-        )
-
-        rows = data.get("output2", [])
-        if isinstance(rows, dict):
-            rows = [rows]
-        return rows or []
-
-    def chart(self,c,p):
-        end=datetime.now(); start=end-timedelta(days={"D":365,"W":1095,"M":2920}[p])
-        return self.get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice","FHKST03010100",
-          {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":c,"FID_INPUT_DATE_1":start.strftime("%Y%m%d"),
-           "FID_INPUT_DATE_2":end.strftime("%Y%m%d"),"FID_PERIOD_DIV_CODE":p,"FID_ORG_ADJ_PRC":"0"}).get("output2",[])
-    def estimate_perform(self,c):
-        # KIS 국내주식-187 종목추정실적. 공식 문서상 모의투자는 미지원.
-        if self.base == PAPER_URL:
-            raise RuntimeError("종목추정실적 API는 모의투자에서 지원되지 않습니다. 모의투자 API를 끄고 조회해 주세요.")
-        return self.get("/uapi/domestic-stock/v1/quotations/estimate-perform","HHKST668300C0",
-                        {"SHT_CD":str(c).zfill(6)})
-    def scan(self,mkt,cnt,lo,hi,vol,r1,r2):
-        return self.get("/uapi/domestic-stock/v1/ranking/fluctuation","FHPST01700000",
-          {"FID_COND_MRKT_DIV_CODE":"J","FID_COND_SCR_DIV_CODE":"20170","FID_INPUT_ISCD":mkt,
-           "FID_RANK_SORT_CLS_CODE":"0","FID_INPUT_CNT_1":str(cnt),"FID_PRC_CLS_CODE":"0",
-           "FID_INPUT_PRICE_1":str(lo or ""),"FID_INPUT_PRICE_2":str(hi or ""),"FID_VOL_CNT":str(vol or ""),
-           "FID_TRGT_CLS_CODE":"0","FID_TRGT_EXLS_CLS_CODE":"0","FID_DIV_CLS_CODE":"0",
-           "FID_RSFL_RATE1":str(r1),"FID_RSFL_RATE2":str(r2)}).get("output",[])
-
-@st.cache_resource(show_spinner=False)
-def client(k,s,p,cache_version="20260928-investor-v2"):
-    x=KIS(k,s,p);x.auth();return x
-@st.cache_data(ttl=10,show_spinner=False)
-def price(k,s,p,c):return client(k,s,p).price(c)
-
-@st.cache_data(ttl=300,show_spinner=False)
-def investor_trade_daily(k,s,p,c):
-    # 중요: client()는 cache_resource라 배포 후 이전 KIS 인스턴스가 남을 수 있다.
-    # 새 메서드 존재 여부에 의존하지 않고 기존 공통 get()으로 공식 API를 직접 호출한다.
-    x = client(k,s,p)
-
-    ref = datetime.now() - timedelta(days=1)
-    while ref.weekday() >= 5:
-        ref -= timedelta(days=1)
-
-    data = x.get(
-        "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
-        "FHPTJ04160001",
-        {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": str(c).zfill(6),
-            "FID_INPUT_DATE_1": ref.strftime("%Y%m%d"),
-            "FID_ORG_ADJ_PRC": "",
-            "FID_ETC_CLS_CODE": "",
+# 분류체계는 UI/데이터와 분리해 향후 DB 기반으로 교체 가능하게 둔다.
+TREE = {
+    '국내자산': {
+        '주식': {
+            '반도체':[
+                '전체','메모리','HBM','AI 반도체','파운드리','팹리스',
+                '반도체 장비','반도체 소재·부품','후공정·패키징','전력반도체'
+            ],
+            '2차전지':[
+                '전체','배터리 셀','양극재','음극재','전해질','분리막',
+                '동박','배터리 장비','폐배터리·리사이클링','ESS/BESS'
+            ],
+            'AI':[
+                '전체','생성형 AI','AI 반도체','AI 소프트웨어','AI 플랫폼',
+                'AI 인프라','데이터센터','클라우드','AI 전력수요'
+            ],
+            '로봇':[
+                '전체','휴머노이드','협동로봇','산업용 로봇','서비스 로봇',
+                '감속기','모터·액추에이터','센서·비전','로봇 자동화'
+            ],
+            '자동차·모빌리티':[
+                '전체','완성차','전기차','자동차 부품','자율주행',
+                'ADAS','전장','스마트카','수소차'
+            ],
+            '전력·전기기기':[
+                '전체','변압기','배전기기','전선','전력망·그리드',
+                '스마트그리드','전력 인프라','데이터센터 전력'
+            ],
+            '원전·에너지':[
+                '전체','원전','SMR','원전 기자재','태양광','풍력',
+                '수소','LNG','정유·석유화학','신재생에너지'
+            ],
+            '방산·우주항공':[
+                '전체','방산','항공우주','미사일','지상무기','레이더·전자전',
+                '위성','우주산업','조선·함정'
+            ],
+            '조선·해운':[
+                '전체','조선','조선 기자재','LNG선','친환경 선박',
+                '해운','물류','항만'
+            ],
+            '바이오·헬스케어':[
+                '전체','제약','바이오','바이오시밀러','CDMO·CMO',
+                '의료기기','진단','디지털헬스','비만·당뇨'
+            ],
+            '인터넷·플랫폼':[
+                '전체','인터넷 플랫폼','검색·포털','핀테크',
+                '이커머스','광고·마케팅','클라우드'
+            ],
+            '게임·콘텐츠':[
+                '전체','게임','웹툰·웹소설','엔터테인먼트','K-POP',
+                '미디어·방송','영화·드라마','콘텐츠 플랫폼'
+            ],
+            '금융':[
+                '전체','은행','증권','보험','카드·결제','핀테크',
+                '고배당 금융'
+            ],
+            '소비재':[
+                '전체','화장품','면세','의류·패션','음식료',
+                '유통','여행·레저','호텔','K-뷰티'
+            ],
+            '건설·인프라':[
+                '전체','건설','건설기계','시멘트','철강',
+                '인프라','스마트시티','데이터센터 인프라'
+            ],
+            '산업재·기계':[
+                '전체','산업기계','공장자동화','스마트팩토리',
+                '중공업','기계부품','플랜트'
+            ],
+            '화학·소재':[
+                '전체','화학','정유','석유화학','철강','비철금속',
+                '희토류','첨단소재'
+            ],
+            '운송·물류':[
+                '전체','항공','해운','택배·물류','철도','모빌리티'
+            ],
+            '배당·가치':[
+                '전체','고배당','저변동성','가치주','퀄리티',
+                '주주환원','밸류업'
+            ],
+            '중소형·스타일':[
+                '전체','코스피200','코스닥150','중소형주',
+                '성장주','가치주','모멘텀','저변동성'
+            ],
+            '친환경·ESG':[
+                '전체','ESG','탄소중립','친환경','수소',
+                '재생에너지','전기차','자원순환'
+            ],
+            '농업·식품':[
+                '전체','농업','비료','사료','식품','스마트팜'
+            ],
         },
-    )
-
-    rows = data.get("output2", [])
-    if isinstance(rows, dict):
-        rows = [rows]
-    return rows or []
-@st.cache_data(ttl=60,show_spinner=False)
-def chart(k,s,p,c,per):return client(k,s,p).chart(c,per)
-
-@st.cache_data(ttl=60,show_spinner=False)
-def minute_chart_raw(k,s,p,c,days=5):
-    """KIS 주식일별분봉조회로 최근 N거래일 분봉 원본을 모은다."""
-    x=client(k,s,p)
-    wanted=max(1,int(days))
-    all_rows=[]
-    found_dates=set()
-
-    # 휴장일을 고려해 넉넉하게 과거 날짜를 탐색한다.
-    ref=datetime.now()
-    max_calendar_days=max(12,wanted*3+10)
-
-    for back in range(max_calendar_days):
-        dt=ref-timedelta(days=back)
-        if dt.weekday()>=5:
-            continue
-
-        date_str=dt.strftime("%Y%m%d")
-        current_time="153000"
-        day_rows=[]
-
-        # 공식 API는 1회 최대 120건이므로 같은 거래일을 시간 역순으로 이어서 조회.
-        for _ in range(5):
-            try:
-                data=x.get(
-                    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
-                    "FHKST03010230",
-                    {
-                        "FID_COND_MRKT_DIV_CODE":"J",
-                        "FID_INPUT_ISCD":str(c).zfill(6),
-                        "FID_INPUT_HOUR_1":current_time,
-                        "FID_INPUT_DATE_1":date_str,
-                        "FID_PW_DATA_INCU_YN":"Y",
-                        "FID_FAKE_TICK_INCU_YN":"",
-                    },
-                )
-            except Exception:
-                day_rows=[]
-                break
-
-            rows=data.get("output2",[])
-            if isinstance(rows,dict):
-                rows=[rows]
-            if not rows:
-                break
-
-            # 요청한 날짜의 데이터만 사용.
-            rows=[r for r in rows if str(r.get("stck_bsop_date",""))==date_str]
-            if not rows:
-                break
-
-            day_rows.extend(rows)
-            times=[str(r.get("stck_cntg_hour","")) for r in rows if r.get("stck_cntg_hour")]
-            if not times:
-                break
-            earliest=min(times)
-            if earliest<="090000" or len(rows)<120:
-                break
-
-            # 중복 페이지를 피하려고 가장 이른 체결시각보다 1초 이전으로 이동.
-            try:
-                tm=datetime.strptime(earliest,"%H%M%S")-timedelta(seconds=1)
-                current_time=tm.strftime("%H%M%S")
-            except Exception:
-                break
-
-        if day_rows:
-            all_rows.extend(day_rows)
-            found_dates.add(date_str)
-            if len(found_dates)>=wanted:
-                break
-
-    return all_rows
-
-def minute_chartdf(rows,minutes):
-    if not rows:return pd.DataFrame()
-    x=pd.DataFrame(rows).copy()
-    aliases={
-        "stck_bsop_date":"date","stck_cntg_hour":"time",
-        "stck_oprc":"open","stck_hgpr":"high","stck_lwpr":"low",
-        "stck_prpr":"close","cntg_vol":"volume"
-    }
-    need=list(aliases.keys())
-    if not all(c in x.columns for c in need):
-        return pd.DataFrame()
-    x=x[need].rename(columns=aliases)
-    x["datetime"]=pd.to_datetime(
-        x["date"].astype(str)+x["time"].astype(str).str.zfill(6),
-        format="%Y%m%d%H%M%S",errors="coerce"
-    )
-    for c in ["open","high","low","close","volume"]:
-        x[c]=pd.to_numeric(x[c].astype(str).str.replace(",","",regex=False),errors="coerce")
-    x=x.dropna(subset=["datetime","open","high","low","close","volume"]).sort_values("datetime")
-    if x.empty:return pd.DataFrame()
-    x=x.set_index("datetime")
-    rule=f"{int(minutes)}min"
-    d=x.resample(rule,origin="start_day",offset="0min",label="left",closed="left").agg(
-        open=("open","first"), high=("high","max"), low=("low","min"),
-        close=("close","last"), volume=("volume","sum")
-    ).dropna().reset_index().rename(columns={"datetime":"date"})
-    for n in [5,20,60,120]:
-        d[f"MA{n}"]=d["close"].rolling(n).mean()
-    return d
-@st.cache_data(ttl=20,show_spinner=False)
-def scan(k,s,p,m,c,lo,hi,v,r1,r2):return client(k,s,p).scan(m,c,lo,hi,v,r1,r2)
-@st.cache_data(ttl=21600,show_spinner=False)
-def estimate_perform(k,s,p,c):
-    # client()는 cache_resource이므로 코드 수정 후에도 이전 KIS 인스턴스가 남을 수 있다.
-    # estimate_perform 메서드 존재 여부에 의존하지 않고 공통 get()으로 직접 호출한다.
-    x = client(k,s,p)
-    if p:
-        raise RuntimeError("종목추정실적 API는 모의투자에서 지원되지 않습니다. 모의투자 API를 끄고 조회해 주세요.")
-    return x.get(
-        "/uapi/domestic-stock/v1/quotations/estimate-perform",
-        "HHKST668300C0",
-        {"SHT_CD":str(c).zfill(6)}
-    )
-
-def chartdf(rows):
-    if not rows:return pd.DataFrame()
-    d=pd.DataFrame(rows).rename(columns={"stck_bsop_date":"date","stck_oprc":"open","stck_hgpr":"high",
-      "stck_lwpr":"low","stck_clpr":"close","acml_vol":"volume"})
-    need=["date","open","high","low","close","volume"]
-    if not all(x in d for x in need):return pd.DataFrame()
-    d["date"]=pd.to_datetime(d["date"],format="%Y%m%d",errors="coerce")
-    for x in need[1:]:d[x]=pd.to_numeric(d[x],errors="coerce")
-    d=d.dropna().sort_values("date")
-    for n in [5,20,60,120]:d[f"MA{n}"]=d["close"].rolling(n).mean()
-    return d
-
-def in_range(value, low, high, enabled=True):
-    if not enabled: return True
-    if value is None or pd.isna(value): return False
-    return float(low) <= float(value) <= float(high)
-
-def ma_match(d, condition):
-    if condition == "사용 안 함": return True
-    if d is None or d.empty or len(d) < 60: return False
-    last=d.iloc[-1]
-    if condition == "정배열 (5>20>60)":
-        return pd.notna(last['MA60']) and last['MA5'] > last['MA20'] > last['MA60']
-    if condition == "역배열 (5<20<60)":
-        return pd.notna(last['MA60']) and last['MA5'] < last['MA20'] < last['MA60']
-    if len(d) < 21: return False
-    prev=d.iloc[-2]
-    if condition == "5/20 골든크로스":
-        return pd.notna(prev['MA20']) and prev['MA5'] <= prev['MA20'] and last['MA5'] > last['MA20']
-    if condition == "5/20 데드크로스":
-        return pd.notna(prev['MA20']) and prev['MA5'] >= prev['MA20'] and last['MA5'] < last['MA20']
-    if condition == "20/60 골든크로스":
-        return pd.notna(prev['MA60']) and prev['MA20'] <= prev['MA60'] and last['MA20'] > last['MA60']
-    return True
-
-def pro_filter_candidates(k,s,paper,base_rows,master,settings):
-    """등락률 순위 후보를 KIS 현재가 + 마스터 ROE + 일봉으로 2차 필터링."""
-    if not base_rows: return []
-    mlookup=master.drop_duplicates('code').set_index('code') if not master.empty else pd.DataFrame()
-    out=[]
-    for i,row in enumerate(base_rows):
-        code=str(row.get('mksc_shrn_iscd') or row.get('stck_shrn_iscd') or '').zfill(6)
-        if len(code)!=6: continue
-        try:
-            q=price(k,s,paper,code)
-            cur=num(q.get('stck_prpr')); turnover=num(q.get('acml_tr_pbmn'))/1e8
-            cap=num(q.get('hts_avls')); per=num(q.get('per'))
-            high250=num(q.get('d250_hgpr'))
-            near_pct=((high250-cur)/high250*100) if high250>0 and cur>0 else None
-            roe=None; prev_vol=None; market=''
-            if not mlookup.empty and code in mlookup.index:
-                mr=mlookup.loc[code]
-                if isinstance(mr,pd.DataFrame): mr=mr.iloc[0]
-                roe=pd.to_numeric(mr.get('roe'),errors='coerce')
-                prev_vol=pd.to_numeric(mr.get('prev_volume'),errors='coerce')
-                market=str(mr.get('market',''))
-            cur_vol=num(q.get('acml_vol'))
-            surge=(cur_vol/float(prev_vol)*100) if prev_vol is not None and pd.notna(prev_vol) and float(prev_vol)>0 else None
-            if settings['market']!='전체' and market and market!=settings['market']: continue
-            if settings['turnover_on'] and turnover < settings['turnover_min']: continue
-            if settings['cap_on'] and not in_range(cap,settings['cap_min'],settings['cap_max']): continue
-            if settings['surge_on'] and (surge is None or surge < settings['surge_min']): continue
-            if settings['high_on'] and (near_pct is None or near_pct > settings['high_near']): continue
-            if settings['per_on'] and not in_range(per,settings['per_min'],settings['per_max']): continue
-            if settings['roe_on'] and not in_range(roe,settings['roe_min'],settings['roe_max']): continue
-            d=None
-            if settings['ma_condition']!='사용 안 함':
-                d=chartdf(chart(k,s,paper,code,'D'))
-                if not ma_match(d,settings['ma_condition']): continue
-
-            earnings_signal=''
-            earnings_score=None
-            earnings_reason=''
-            if settings.get('earnings_improve_on',False):
-                try:
-                    fdf=naver_fundamental_2025_2028(code)
-                    earnings_signal,earnings_score,earnings_reason=earnings_momentum(fdf)
-                except Exception:
-                    # 컨센서스 조회가 안 되는 종목은 '실적개선 종목만' 필터에서 제외
-                    continue
-                if earnings_signal != '📈 실적개선':
-                    continue
-
-            enriched=dict(row)
-            enriched.update({'_code':code,'_per':per,'_roe':roe,'_turnover_100m':turnover,'_cap_100m':cap,
-                             '_surge_pct':surge,'_near_high_pct':near_pct,
-                             '_earnings_signal':earnings_signal,'_earnings_score':earnings_score,
-                             '_earnings_reason':earnings_reason})
-            out.append(enriched)
-            if len(out)>=settings['result_count']: break
-            time.sleep(0.04)
-        except Exception:
-            continue
-    return out
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def naver_fundamental_2025_2028(code):
-    """Naver/WiseReport Financial Summary annual data for 2025~2028.
-
-    Flow:
-      1) Open WiseReport v2 company overview page for the selected code.
-      2) Extract the fresh encparam/id generated for that company page.
-      3) Call cF1001.aspx AJAX Financial Summary.
-      4) Extract Operating profit (reported basis preferred), EPS, PER and ROE.
-
-    This is a public-web HTML integration, not an official Open API. If the provider
-    changes the HTML/AJAX contract this parser may need an update.
-    """
-    code = str(code).zfill(6)
-    base = "https://navercomp.wisereport.co.kr/v2"
-    parent_url = f"{base}/company/c1010001.aspx"
-    ajax_url = f"{base}/company/ajax/cF1001.aspx"
-
-    sess = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.5",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    parent = sess.get(parent_url, params={"cmp_cd": code, "cn": ""}, headers=headers, timeout=20)
-    parent.raise_for_status()
-    parent.encoding = parent.apparent_encoding or "utf-8"
-    html = parent.text
-
-    # WiseReport creates these values on the parent page. Do not hard-code them.
-    enc_patterns = [
-        r"encparam\s*:\s*['\"]([^'\"]+)['\"]",
-        r"encparam\s*=\s*['\"]([^'\"]+)['\"]",
-        r"['\"]encparam['\"]\s*:\s*['\"]([^'\"]+)['\"]",
-    ]
-    id_patterns = [
-        r"\bid\s*:\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
-        r"\bid\s*=\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
-        r"['\"]id['\"]\s*:\s*['\"]([A-Za-z0-9+/=_-]+)['\"]",
-    ]
-    def first_match(patterns, text):
-        for pat in patterns:
-            m = re.search(pat, text, re.I)
-            if m:
-                return m.group(1)
-        return None
-
-    encparam = first_match(enc_patterns, html)
-    encid = first_match(id_patterns, html)
-    if not encparam or not encid:
-        raise RuntimeError("WiseReport 종목별 인증 파라미터(encparam/id)를 찾지 못했습니다.")
-
-    ajax_headers = {
-        **headers,
-        "Referer": parent.url,
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept": "text/html, */*; q=0.01",
-    }
-
-    def clean(x):
-        return re.sub(r"\s+", " ", str(x).replace("\xa0", " ")).strip()
-
-    def flatten_col(col):
-        if isinstance(col, tuple):
-            parts=[]
-            for x in col:
-                z=clean(x)
-                if z and not z.lower().startswith("unnamed") and z not in parts:
-                    parts.append(z)
-            return " ".join(parts)
-        return clean(col)
-
-    def fetch_summary(freq_typ):
-        params = {
-            "cmp_cd": code,
-            "fin_typ": "0",       # 주재무제표
-            "freq_typ": freq_typ, # Y=annual; A is fallback for some layouts
-            "encparam": encparam,
-            "id": encid,
+        '채권': {
+            '국내채권':['전체','국고채','통안채','회사채','금융채','단기채','중기채','장기채','초장기채'],
+            '채권전략':['전체','금리하락 수혜','금리상승 방어','듀레이션','크레딧','우량채','고금리채']
+        },
+        '원자재': {
+            '귀금속':['전체','금','은'],
+            '에너지':['전체','원유','천연가스'],
+            '산업금속':['전체','구리','알루미늄','니켈','희토류'],
+            '농산물':['전체','곡물','농산물']
+        },
+        '리츠': {
+            '리츠':['전체','국내 리츠','오피스','물류센터','데이터센터','호텔·리조트','인프라']
+        },
+        '혼합자산': {
+            '자산배분':['전체','주식+채권','인컴','타깃리스크','멀티에셋']
         }
-        rr = sess.get(ajax_url, params=params, headers=ajax_headers, timeout=20)
-        rr.raise_for_status()
-        rr.encoding = rr.apparent_encoding or "utf-8"
-        if len(rr.text.strip()) < 100:
-            raise RuntimeError(f"Financial Summary 응답이 비어 있습니다. (freq={freq_typ})")
-        try:
-            tabs = pd.read_html(io.StringIO(rr.text))
-        except Exception as e:
-            raise RuntimeError(f"Financial Summary HTML 파싱 실패 (freq={freq_typ}): {e}")
-        return tabs
+    },
 
-    tables=[]
-    errors=[]
-    for freq in ("Y", "A"):
-        try:
-            tables.extend(fetch_summary(freq))
-            if tables:
-                break
-        except Exception as e:
-            errors.append(str(e))
-    if not tables:
-        raise RuntimeError("Financial Summary AJAX 조회 실패: " + " / ".join(errors[-2:]))
+    '해외자산': {
+        '주식': {
+            '미국 대표지수':[
+                '전체','S&P500','NASDAQ100','다우30','러셀2000',
+                '미국 대형주','미국 중소형주'
+            ],
+            '글로벌·국가':[
+                '전체','글로벌','미국','중국','일본','인도','베트남',
+                '유럽','대만','신흥국','선진국'
+            ],
+            '빅테크':[
+                '전체','Magnificent 7','플랫폼','클라우드','소프트웨어',
+                '인터넷','전자상거래'
+            ],
+            'AI':[
+                '전체','생성형 AI','AI 반도체','AI 소프트웨어','AI 플랫폼',
+                'AI 인프라','데이터센터','클라우드','AI 전력수요'
+            ],
+            '반도체':[
+                '전체','AI 반도체','메모리·HBM','파운드리','팹리스',
+                '반도체 장비','반도체 소재','전력반도체'
+            ],
+            '로봇':[
+                '전체','휴머노이드','산업용 로봇','서비스 로봇',
+                '자동화','로봇 부품'
+            ],
+            '사이버보안':[
+                '전체','사이버보안','클라우드 보안','네트워크 보안'
+            ],
+            '양자컴퓨팅':[
+                '전체','양자컴퓨팅','양자통신','차세대 컴퓨팅'
+            ],
+            '우주·항공':[
+                '전체','우주산업','위성','발사체','항공우주','드론'
+            ],
+            '방산':[
+                '전체','미국 방산','글로벌 방산','항공우주 방산',
+                '미사일·전자전'
+            ],
+            '원전·에너지':[
+                '전체','원전','SMR','우라늄','태양광','풍력',
+                '수소','석유·가스','LNG','신재생에너지'
+            ],
+            '전력·그리드':[
+                '전체','전력망','변압기','스마트그리드',
+                '전력 인프라','데이터센터 전력'
+            ],
+            '전기차·배터리':[
+                '전체','전기차','배터리','리튬','배터리 소재',
+                '충전 인프라','자율주행'
+            ],
+            '바이오·헬스케어':[
+                '전체','바이오','제약','의료기기','유전체',
+                '비만·당뇨','헬스케어 혁신'
+            ],
+            '금융·핀테크':[
+                '전체','은행','보험','자산운용','핀테크',
+                '디지털결제','블록체인'
+            ],
+            '소비·브랜드':[
+                '전체','필수소비재','임의소비재','럭셔리',
+                '여행·레저','음식료','글로벌 브랜드'
+            ],
+            '게임·메타버스':[
+                '전체','게임','e스포츠','메타버스','디지털콘텐츠'
+            ],
+            '산업재·인프라':[
+                '전체','산업재','건설','인프라','기계',
+                '스마트팩토리','물류'
+            ],
+            '클린테크':[
+                '전체','친환경','탄소중립','재생에너지',
+                '수소','에너지저장','전기차'
+            ],
+            '배당·스타일':[
+                '전체','고배당','배당성장','퀄리티','가치주',
+                '성장주','모멘텀','저변동성'
+            ],
+        },
+        '채권': {
+            '미국 국채':['전체','초단기','단기','중기','장기','초장기','물가연동채'],
+            '회사채':['전체','투자등급','하이일드','우량회사채'],
+            '글로벌 채권':['전체','선진국 채권','신흥국 채권','글로벌 종합채권']
+        },
+        '원자재': {
+            '귀금속':['전체','금','은'],
+            '에너지':['전체','원유','천연가스'],
+            '산업금속':['전체','구리','알루미늄','니켈','리튬','우라늄'],
+            '농산물':['전체','곡물','농산물']
+        },
+        '리츠': {
+            '글로벌 리츠':['전체','미국 리츠','글로벌 리츠','데이터센터','물류','주거','헬스케어','인프라']
+        },
+        '혼합자산': {
+            '자산배분':['전체','주식+채권','인컴','멀티에셋','리스크패리티']
+        }
+    }
+}
 
-    # Pick the table containing the four target metrics and annual year headers.
-    candidates=[]
-    for t in tables:
-        if t is None or t.empty:
-            continue
-        d=t.copy()
-        d.columns=[flatten_col(c) for c in d.columns]
-        blob=(" ".join(d.columns)+" "+" ".join(clean(x) for x in d.astype(str).values.ravel()[:5000])).upper()
-        metric_score=sum(k in blob for k in ["영업이익","EPS","PER","ROE"])
-        year_score=sum(str(y) in blob for y in [2025,2026,2027,2028])
-        candidates.append((metric_score*10+year_score,d))
-    candidates.sort(key=lambda x:x[0], reverse=True)
-    if not candidates or candidates[0][0] < 30:
-        raise RuntimeError("Financial Summary 표에서 영업이익/EPS/PER/ROE를 찾지 못했습니다.")
-    d=candidates[0][1]
+# =========================================================
+# AUTO THEME MAPPING
+# ETF명 + 추종지수 + 구성종목명/비중을 이용한 로컬 규칙 기반 자동 매핑
+# =========================================================
 
-    # Identify year columns from the flattened MultiIndex header.  A header such as
-    # '연간 2026/12(E) (IFRS연결)' maps to 2026.
-    year_cols={}
-    for c in d.columns:
-        m=re.search(r"(2025|2026|2027|2028)\s*[/.-]?\s*\d{0,2}", clean(c))
-        if m:
-            year_cols[int(m.group(1))]=c
-    # Some pandas versions keep the period labels in the first data row.
-    if len(year_cols)<2:
-        for ridx in range(min(3,len(d))):
-            for c in d.columns:
-                m=re.search(r"(2025|2026|2027|2028)\s*[/.-]?\s*\d{0,2}", clean(d.iloc[ridx][c]))
-                if m:
-                    year_cols[int(m.group(1))]=c
-    if not year_cols:
-        raise RuntimeError("Financial Summary에서 2025~2028 연간 열을 찾지 못했습니다.")
+THEME_RULES_VERSION='2026-09-30-v2'
 
-    # The first column is normally 주요재무정보.  Search every cell in the first
-    # few columns so minor layout changes do not break the row lookup.
-    search_cols=list(d.columns)[:min(3,len(d.columns))]
-    row_labels=[]
-    for idx,row in d.iterrows():
-        label=" ".join(clean(row[c]) for c in search_cols)
-        row_labels.append((idx,label))
+THEME_KEYWORDS={
+    '반도체':['반도체','semiconductor','semicon','chip','sox'],
+    '메모리':['메모리','memory','dram','nand'],
+    'HBM':['hbm','high bandwidth memory'],
+    'AI 반도체':['ai반도체','ai semiconductor','gpu','npu','accelerator','엔비디아','nvidia'],
+    '파운드리':['파운드리','foundry','tsmc'],
+    '팹리스':['팹리스','fabless'],
+    '반도체 장비':['반도체장비','semiconductor equipment','asml','한미반도체','hpsp','원익ips','유진테크','주성엔지니어링'],
+    '반도체 소재·부품':['반도체소재','반도체부품','소부장','wafer','웨이퍼','솔브레인','isc'],
+    '후공정·패키징':['후공정','패키징','packaging','osat','테스트소켓','test socket'],
+    '전력반도체':['전력반도체','power semiconductor','sic','gan'],
 
-    def find_metric_row(metric):
-        normalized=[(idx,re.sub(r"\s+","",lab).upper()) for idx,lab in row_labels]
-        if metric=="영업이익":
-            # Naver Financial Summary shows a separate 발표기준 row when consensus exists.
-            for idx,lab in normalized:
-                if "영업이익(발표기준)" in lab:
-                    return idx
-            for idx,lab in normalized:
-                if "영업이익" in lab and "영업이익률" not in lab:
-                    return idx
-        targets={"EPS":["EPS(원)","EPS"],"PER":["PER(배)","PER"],"ROE":["ROE(%)","ROE"]}[metric]
-        for target in targets:
-            z=target.replace(" ","").upper()
-            for idx,lab in normalized:
-                if z in lab:
-                    return idx
-        return None
+    '2차전지':['2차전지','이차전지','배터리','battery','리튬','lithium'],
+    '배터리 셀':['배터리셀','battery cell','lg에너지솔루션','삼성sdi','sk온'],
+    '양극재':['양극재','cathode','에코프로비엠','포스코퓨처엠','엘앤에프'],
+    '음극재':['음극재','anode'],
+    '전해질':['전해질','electrolyte'],
+    '분리막':['분리막','separator'],
+    '동박':['동박','copper foil','skc'],
+    '배터리 장비':['배터리장비','battery equipment','피엔티','윤성에프앤씨'],
+    '폐배터리·리사이클링':['폐배터리','리사이클','recycling','recycle'],
+    'ESS/BESS':['ess','bess','에너지저장','energy storage'],
 
-    rows={m:find_metric_row(m) for m in ["영업이익","EPS","PER","ROE"]}
-    if rows["영업이익"] is None or rows["EPS"] is None:
-        raise RuntimeError("Financial Summary에서 영업이익 또는 EPS 행을 찾지 못했습니다.")
+    'AI':['인공지능','artificial intelligence','generative ai','생성형ai','ai반도체','ai소프트웨어','ai플랫폼','ai인프라'],
+    '생성형 AI':['생성형ai','generative ai','llm','chatgpt'],
+    'AI 소프트웨어':['ai소프트웨어','ai software','software'],
+    'AI 플랫폼':['ai플랫폼','ai platform'],
+    'AI 인프라':['ai인프라','ai infrastructure','gpu','accelerator'],
+    '데이터센터':['데이터센터','data center','datacenter'],
+    '클라우드':['클라우드','cloud'],
+    'AI 전력수요':['ai전력','전력수요','power demand','data center power'],
 
-    def parse_num(v):
-        z=clean(v).replace(",","").replace("원","").replace("배","").replace("%","")
-        z=z.replace("−","-")
-        if z.lower() in ("","-","--","nan","none","n/a"):
-            return float("nan")
-        neg=z.startswith("(") and z.endswith(")")
-        z=z.strip("()")
-        # Keep only a normal signed decimal number; footnote text is discarded.
-        m=re.search(r"[-+]?\d+(?:\.\d+)?",z)
-        if not m:
-            return float("nan")
-        val=float(m.group(0))
-        return -abs(val) if neg else val
+    '로봇':['로봇','robot','robotics','휴머노이드','humanoid'],
+    '휴머노이드':['휴머노이드','humanoid','레인보우로보틱스'],
+    '협동로봇':['협동로봇','cobot','두산로보틱스'],
+    '산업용 로봇':['산업용로봇','industrial robot'],
+    '서비스 로봇':['서비스로봇','service robot','로보티즈'],
+    '감속기':['감속기','reducer','gearbox','에스피지'],
+    '모터·액추에이터':['모터','motor','액추에이터','actuator','하이젠알앤엠'],
+    '센서·비전':['센서','sensor','비전','vision'],
+    '로봇 자동화':['로봇자동화','automation','factory automation'],
 
+    '자동차·모빌리티':['자동차','완성차','모빌리티','mobility','자율주행','전기차'],
+    '완성차':['완성차','현대차','기아','automaker'],
+    '전기차':['전기차','electric vehicle','tesla','테슬라'],
+    '자동차 부품':['자동차부품','auto parts','현대모비스'],
+    '자율주행':['자율주행','autonomous driving','self driving'],
+    'ADAS':['adas','첨단운전자'],
+    '전장':['전장','automotive electronics'],
+    '스마트카':['스마트카','smart car','connected car'],
+    '수소차':['수소차','fuel cell vehicle'],
+
+    '전력·전기기기':['전력','전기기기','변압기','전선','그리드','grid'],
+    '전력·그리드':['전력','그리드','grid','power infrastructure','변압기'],
+    '변압기':['변압기','transformer','hd현대일렉트릭','효성중공업','제룡전기'],
+    '배전기기':['배전','distribution equipment','ls electric'],
+    '전선':['전선','cable','대한전선','일진전기'],
+    '전력망·그리드':['전력망','power grid','grid'],
+    '스마트그리드':['스마트그리드','smart grid'],
+    '전력 인프라':['전력인프라','power infrastructure'],
+    '데이터센터 전력':['데이터센터전력','data center power'],
+
+    '원전·에너지':['원전','원자력','nuclear','smr','우라늄','uranium','태양광','solar','풍력','wind','수소','hydrogen','에너지'],
+    '원전':['원전','원자력','nuclear'],
+    'SMR':['smr','소형모듈원전','small modular reactor'],
+    '원전 기자재':['원전기자재','두산에너빌리티','한전기술','한전kps','비에이치아이'],
+    '태양광':['태양광','solar'],
+    '풍력':['풍력','wind'],
+    '수소':['수소','hydrogen'],
+    'LNG':['lng','천연가스','natural gas'],
+    '우라늄':['우라늄','uranium'],
+    '신재생에너지':['신재생','renewable'],
+
+    '방산·우주항공':['방산','국방','defense','defence','항공우주','aerospace','우주','space'],
+    '방산':['방산','defense','defence','한화에어로스페이스','lig넥스원','현대로템'],
+    '항공우주':['항공우주','aerospace','한국항공우주'],
+    '미사일':['미사일','missile','lig넥스원'],
+    '지상무기':['지상무기','현대로템'],
+    '레이더·전자전':['레이더','radar','전자전','한화시스템'],
+    '위성':['위성','satellite'],
+    '우주산업':['우주','space'],
+    '조선·함정':['함정','naval','한화오션','hd현대중공업'],
+
+    '조선·해운':['조선','해운','shipbuilding','shipping','선박'],
+    '조선':['조선','shipbuilding','hd한국조선해양','hd현대중공업','한화오션','삼성중공업'],
+    '조선 기자재':['조선기자재','ship equipment'],
+    'LNG선':['lng선','lng carrier'],
+    '친환경 선박':['친환경선박','green ship'],
+    '해운':['해운','shipping','hmm'],
+    '물류':['물류','logistics','cj대한통운'],
+    '항만':['항만','port'],
+
+    '바이오·헬스케어':['바이오','bio','제약','pharma','헬스케어','healthcare','의료'],
+    '제약':['제약','pharma','유한양행'],
+    '바이오':['바이오','bio','삼성바이오로직스','셀트리온','알테오젠'],
+    '바이오시밀러':['바이오시밀러','biosimilar','셀트리온'],
+    'CDMO·CMO':['cdmo','cmo','삼성바이오로직스'],
+    '의료기기':['의료기기','medical device'],
+    '진단':['진단','diagnostic'],
+    '디지털헬스':['디지털헬스','digital health'],
+    '비만·당뇨':['비만','obesity','당뇨','diabetes'],
+
+    '인터넷·플랫폼':['인터넷','platform','플랫폼','naver','카카오','이커머스'],
+    '인터넷 플랫폼':['인터넷플랫폼','naver','카카오','platform'],
+    '검색·포털':['검색','포털','search','naver'],
+    '핀테크':['핀테크','fintech','카카오페이'],
+    '이커머스':['이커머스','ecommerce','e-commerce','쿠팡','coupang'],
+    '광고·마케팅':['광고','advertising','marketing'],
+
+    '게임·콘텐츠':['게임','gaming','콘텐츠','content','엔터','entertainment','k-pop','웹툰'],
+    '게임':['게임','gaming','크래프톤','엔씨소프트','넷마블','펄어비스'],
+    '웹툰·웹소설':['웹툰','webtoon','웹소설'],
+    '엔터테인먼트':['엔터','entertainment','하이브','jyp','sm엔터'],
+    'K-POP':['k-pop','kpop','하이브','jyp'],
+    '미디어·방송':['미디어','media','방송'],
+    '영화·드라마':['영화','드라마','movie','drama'],
+    '콘텐츠 플랫폼':['콘텐츠플랫폼','content platform'],
+
+    '금융':['금융','은행','bank','증권','보험','financial'],
+    '은행':['은행','bank','kb금융','신한지주','하나금융지주','우리금융지주'],
+    '증권':['증권','securities','미래에셋증권','한국금융지주'],
+    '보험':['보험','insurance','삼성생명','삼성화재'],
+    '카드·결제':['결제','payment','card'],
+    '고배당 금융':['고배당금융','금융고배당'],
+
+    '소비재':['소비','consumer','화장품','cosmetic','뷰티','beauty','음식료','food','유통','retail','여행'],
+    '화장품':['화장품','cosmetic','아모레퍼시픽','lg생활건강','코스맥스','한국콜마'],
+    'K-뷰티':['k-beauty','k뷰티','화장품'],
+    '음식료':['음식료','food','삼양식품','농심','오리온','cj제일제당'],
+    '여행·레저':['여행','레저','travel','leisure'],
+    '호텔':['호텔','hotel'],
+
+    '건설·인프라':['건설','construction','인프라','infrastructure','시멘트','건설기계'],
+    '산업재·인프라':['산업재','industrial','인프라','infrastructure','건설','기계'],
+    '산업재·기계':['산업재','산업기계','기계','machinery','스마트팩토리','중공업'],
+    '화학·소재':['화학','chemical','소재','materials','철강','steel','희토류','rare earth'],
+    '운송·물류':['운송','물류','transport','logistics','항공','해운'],
+    '친환경·ESG':['esg','친환경','탄소중립','green','clean','재생에너지'],
+    '클린테크':['cleantech','clean tech','친환경','탄소중립','renewable'],
+    '농업·식품':['농업','agriculture','식품','food','곡물','비료','사료'],
+
+    '미국 대표지수':['s&p500','sp500','nasdaq100','나스닥100','dow','다우','russell','러셀'],
+    'S&P500':['s&p500','s&p 500','sp500'],
+    'NASDAQ100':['nasdaq100','nasdaq 100','나스닥100'],
+    '다우30':['dow30','dow 30','다우30'],
+    '러셀2000':['russell2000','russell 2000','러셀2000'],
+
+    '글로벌·국가':['글로벌','global','world','msci','중국','china','일본','japan','인도','india','베트남','vietnam','유럽','europe','대만','taiwan','신흥국'],
+    '빅테크':['빅테크','bigtech','big tech','magnificent','매그니피센트','fang'],
+    'Magnificent 7':['magnificent 7','magnificent7','매그니피센트7','m7'],
+    '플랫폼':['platform','플랫폼'],
+    '소프트웨어':['software','소프트웨어'],
+    '인터넷':['internet','인터넷'],
+    '전자상거래':['ecommerce','e-commerce','전자상거래'],
+
+    '사이버보안':['cybersecurity','cyber security','사이버보안'],
+    '클라우드 보안':['cloud security','클라우드보안'],
+    '네트워크 보안':['network security','네트워크보안'],
+    '양자컴퓨팅':['quantum computing','양자컴퓨팅','quantum'],
+    '양자통신':['quantum communication','양자통신'],
+
+    '배당·가치':['고배당','배당','dividend','밸류업','value','가치','저변동','퀄리티'],
+    '배당·스타일':['고배당','배당','dividend','배당성장','quality','value','momentum','저변동'],
+    '고배당':['고배당','high dividend'],
+    '배당성장':['배당성장','dividend growth'],
+    '저변동성':['저변동','low volatility'],
+    '가치주':['가치','value'],
+    '퀄리티':['퀄리티','quality'],
+    '밸류업':['밸류업','value up'],
+    '성장주':['성장','growth'],
+    '모멘텀':['모멘텀','momentum'],
+    '코스피200':['코스피200','kospi200'],
+    '코스닥150':['코스닥150','kosdaq150'],
+}
+
+# 대표 구성종목 → 산업/세부분야 보강 규칙
+COMPANY_THEME_HINTS={
+    '삼성전자':[('반도체','메모리'),('AI','AI 반도체')],
+    'sk하이닉스':[('반도체','메모리'),('반도체','HBM'),('AI','AI 반도체')],
+    '한미반도체':[('반도체','반도체 장비'),('반도체','HBM')],
+    'hpsp':[('반도체','반도체 장비')],
+    '원익ips':[('반도체','반도체 장비')],
+    'lg에너지솔루션':[('2차전지','배터리 셀')],
+    '삼성sdi':[('2차전지','배터리 셀')],
+    '에코프로비엠':[('2차전지','양극재')],
+    '포스코퓨처엠':[('2차전지','양극재')],
+    '레인보우로보틱스':[('로봇','휴머노이드')],
+    '두산로보틱스':[('로봇','협동로봇')],
+    '로보티즈':[('로봇','서비스 로봇')],
+    '에스피지':[('로봇','감속기')],
+    '하이젠알앤엠':[('로봇','모터·액추에이터')],
+    'hd현대일렉트릭':[('전력·전기기기','변압기')],
+    '효성중공업':[('전력·전기기기','변압기')],
+    '제룡전기':[('전력·전기기기','변압기')],
+    '두산에너빌리티':[('원전·에너지','원전 기자재')],
+    '한전기술':[('원전·에너지','원전 기자재')],
+    '한전kps':[('원전·에너지','원전 기자재')],
+    '한화에어로스페이스':[('방산·우주항공','방산')],
+    'lig넥스원':[('방산·우주항공','미사일')],
+    '한국항공우주':[('방산·우주항공','항공우주')],
+    '현대로템':[('방산·우주항공','지상무기')],
+    '한화시스템':[('방산·우주항공','레이더·전자전')],
+    'hd한국조선해양':[('조선·해운','조선')],
+    'hd현대중공업':[('조선·해운','조선')],
+    '한화오션':[('조선·해운','조선')],
+    '삼성중공업':[('조선·해운','조선')],
+    '삼성바이오로직스':[('바이오·헬스케어','CDMO·CMO'),('바이오·헬스케어','바이오')],
+    '셀트리온':[('바이오·헬스케어','바이오시밀러')],
+    '유한양행':[('바이오·헬스케어','제약')],
+    'naver':[('인터넷·플랫폼','인터넷 플랫폼'),('AI','AI 플랫폼')],
+    '카카오':[('인터넷·플랫폼','인터넷 플랫폼')],
+    '크래프톤':[('게임·콘텐츠','게임')],
+    '하이브':[('게임·콘텐츠','K-POP')],
+    'kb금융':[('금융','은행')],
+    '신한지주':[('금융','은행')],
+    '하나금융지주':[('금융','은행')],
+    '아모레퍼시픽':[('소비재','화장품')],
+    '코스맥스':[('소비재','화장품')],
+    '한국콜마':[('소비재','화장품')],
+    'nvidia':[('AI','AI 반도체'),('반도체','AI 반도체')],
+    '엔비디아':[('AI','AI 반도체'),('반도체','AI 반도체')],
+    'tsmc':[('반도체','파운드리')],
+    'asml':[('반도체','반도체 장비')],
+    'amd':[('반도체','AI 반도체')],
+    'microsoft':[('AI','AI 소프트웨어'),('빅테크','소프트웨어')],
+    'alphabet':[('AI','AI 플랫폼'),('빅테크','플랫폼')],
+    'amazon':[('AI','클라우드'),('빅테크','전자상거래')],
+    'meta platforms':[('AI','AI 플랫폼'),('빅테크','플랫폼')],
+    'tesla':[('전기차·배터리','전기차')],
+}
+
+
+def _norm_theme_text(value):
+    s=str(value or '').lower()
+    s=s.replace('&',' and ')
+    return re.sub(r'[\s_\-·/,+()\[\]{}:;.%]+','',s)
+
+
+def _theme_keywords(label):
+    vals=[label]
+    vals.extend(THEME_KEYWORDS.get(label,[]))
+    # 복합 라벨은 각 단어도 보조 키워드로 사용
+    for v in re.split(r'[·/+]',str(label)):
+        if len(v.strip())>=2:
+            vals.append(v.strip())
     out=[]
-    for year in [2025,2026,2027,2028]:
-        col=year_cols.get(year)
-        rec={"연도":year,"구분":"A" if year==2025 else "E"}
-        for metric,ridx in rows.items():
-            rec[metric]=parse_num(d.loc[ridx,col]) if col is not None and ridx is not None else float("nan")
-        out.append(rec)
-    result=pd.DataFrame(out)
-    if result[["영업이익","EPS","PER","ROE"]].isna().all().all():
-        raise RuntimeError("2025~2028 Financial Summary 값이 모두 비어 있습니다.")
-    return result
-
-def earnings_momentum(df):
-    """2025A~2028E 영업이익/EPS/PER/ROE 흐름을 정량 요약한다.
-
-    반환: (라벨, 점수, 근거문구)
-    - 영업이익/EPS 성장 방향을 가장 크게 반영
-    - ROE 개선은 보조 가점/감점
-    - PER은 이익/EPS가 성장하는 상황에서 부담 완화 여부만 보조 반영
-    """
-    if df is None or df.empty:
-        return "⚪ 데이터부족", 0, "재무 컨센서스 데이터 없음"
-    x=df.copy().sort_values('연도')
-    for c in ['영업이익','EPS','PER','ROE']:
-        x[c]=pd.to_numeric(x[c],errors='coerce')
-
-    score=0
-    reasons=[]
-
-    def direction(col, weight_up, weight_down, label):
-        nonlocal score
-        v=x[col].dropna()
-        if len(v)<2: return None
-        first,last=float(v.iloc[0]),float(v.iloc[-1])
-        if first == 0: return None
-        chg=(last-first)/abs(first)*100
-        # 작은 변동은 중립 처리
-        if chg >= 5:
-            score += weight_up
-            reasons.append(f"{label} 증가")
-            return 'up'
-        if chg <= -5:
-            score -= weight_down
-            reasons.append(f"{label} 감소")
-            return 'down'
-        reasons.append(f"{label} 보합")
-        return 'flat'
-
-    op_dir=direction('영업이익',2,2,'영업이익')
-    eps_dir=direction('EPS',2,2,'EPS')
-    roe_dir=direction('ROE',1,1,'ROE')
-
-    per=x['PER'].dropna()
-    if len(per)>=2 and op_dir=='up' and eps_dir=='up':
-        p0,p1=float(per.iloc[0]),float(per.iloc[-1])
-        if p0>0 and p1>0:
-            if p1 <= p0*0.95:
-                score += 1
-                reasons.append('Forward PER 부담 완화')
-            elif p1 >= p0*1.15:
-                score -= 1
-                reasons.append('Forward PER 상승')
-
-    # 핵심 이익지표가 서로 반대면 과도한 분류를 피한다.
-    if op_dir=='up' and eps_dir=='down': score=min(score,1)
-    if op_dir=='down' and eps_dir=='up': score=max(score,-1)
-
-    if score >= 3:
-        label='📈 실적개선'
-    elif score <= -3:
-        label='📉 실적둔화'
-    else:
-        label='➡️ 중립'
-    return label, score, ' · '.join(reasons) if reasons else '판단 데이터 부족'
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def auto_earnings_top5(candidate_records):
-    """시총 상위 후보 → 거래대금 1차 정렬 → WiseReport 실적모멘텀 TOP 5.
-
-    candidate_records는 (code, name, market, master_cap) 튜플 목록.
-    결과는 6시간 캐시한다.
-    """
-    # 1차: 시가총액 상위 후보 중 현재 거래대금 확인
-    liquid=[]
-    for code,name,market,master_cap in candidate_records:
-        try:
-            q=price(KEY,SEC,False,str(code).zfill(6))
-            turnover=num(q.get("acml_tr_pbmn"))  # 원
-            if turnover <= 0:
-                continue
-            liquid.append({
-                "code":str(code).zfill(6), "name":str(name), "market":str(market),
-                "master_cap":float(master_cap) if master_cap is not None and pd.notna(master_cap) else 0.0,
-                "turnover":float(turnover),
-            })
-            time.sleep(0.03)
-        except Exception:
-            continue
-
-    # 거래대금 상위 20개만 컨센서스 분석
-    liquid=sorted(liquid, key=lambda x:x["turnover"], reverse=True)[:20]
-    if not liquid:
-        return []
-
-    def analyze(rec):
-        try:
-            fdf=naver_fundamental_2025_2028(rec["code"])
-            label,score,reason=earnings_momentum(fdf)
-            if label != "📈 실적개선":
-                return None
-            y2028=fdf[fdf["연도"]==2028]
-            eps28=float(y2028["EPS"].iloc[0]) if not y2028.empty and pd.notna(y2028["EPS"].iloc[0]) else None
-            out=dict(rec)
-            out.update({"signal":label,"score":int(score),"reason":reason,"eps_2028":eps28})
-            return out
-        except Exception:
-            return None
-
-    # WiseReport는 네트워크 I/O이므로 제한된 동시 요청으로 첫 계산 시간을 줄인다.
-    results=[]
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futures=[ex.submit(analyze,rec) for rec in liquid]
-        for fut in as_completed(futures):
-            r=fut.result()
-            if r:
-                results.append(r)
-
-    # 점수 → 거래대금 → 시총 순
-    results.sort(key=lambda x:(x["score"],x["turnover"],x["master_cap"]), reverse=True)
-    return results[:5]
-
-def earnings_top_panel_html(rows):
-    if not rows:
-        body=(
-            '<div style="color:#60766E;font-size:12px;line-height:1.45;">'
-            '실적개선 종목을 계산하지 못했거나 컨센서스가 부족합니다.</div>'
-        )
-    else:
-        medals=["🥇","🥈","🥉","4","5"]
-        parts=[]
-        for i,r in enumerate(rows[:5]):
-            parts.append(
-                f'<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;'
-                f'border-bottom:1px solid #E0EBE6;">'
-                f'<span style="color:#29483D;font-weight:750;">{medals[i]}&nbsp; {r["name"]}</span>'
-                f'<span style="color:#D73749;font-weight:900;">+{r["score"]}점</span></div>'
-            )
-        body=''.join(parts)
-    return (
-        '<div style="background:#FFFFFF;border:1px solid #C8DBD3;border-radius:6px;'
-        'padding:9px 10px;margin:8px 0 6px 0;">'
-        '<div style="color:#007B69;font-size:15px;font-weight:900;margin-bottom:4px;">📈 실적개선 TOP 5</div>'
-        + body +
-        '<div style="color:#687E74;font-size:10px;margin-top:6px;">'
-        '기준: 2025A→2028E · 시총 40→거래대금 20 · 6시간 캐시</div></div>'
-    )
-
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def hanav_google_news(query, limit=8):
-    """Google News RSS 최신 기사. OpenAI API를 사용하지 않는다."""
-    from urllib.parse import quote_plus
-    url = (
-        "https://news.google.com/rss/search?q="
-        + quote_plus(str(query))
-        + "&hl=ko&gl=KR&ceid=KR:ko"
-    )
-    headers={"User-Agent":"Mozilla/5.0"}
-    r=requests.get(url,headers=headers,timeout=12)
-    r.raise_for_status()
-    root=ET.fromstring(r.content)
-    out=[]
-    for item in root.findall(".//item")[:int(limit)]:
-        title=html.unescape((item.findtext("title") or "").strip())
-        link=(item.findtext("link") or "").strip()
-        pub=(item.findtext("pubDate") or "").strip()
-        source_el=item.find("source")
-        source=(source_el.text or "").strip() if source_el is not None else ""
-        if title:
-            out.append({"title":title,"link":link,"pubDate":pub,"source":source})
+    seen=set()
+    for v in vals:
+        n=_norm_theme_text(v)
+        if n and n not in seen:
+            out.append(n)
+            seen.add(n)
     return out
 
-def hanav_news_impact(title):
-    """제목 키워드 기반의 단순 시장 영향 태그. 투자판단이 아닌 뉴스 분류용."""
-    t=str(title).lower()
-    strong=["급등","사상 최대","신고가","대규모 수주","깜짝 실적","surge","record high","beat"]
-    risk=["급락","폭락","적자","리콜","제재","관세","전쟁","해킹","파산","우려","하향","miss","plunge"]
-    watch=["금리","환율","유가","연준","fed","고용","물가","cpi","실적","수주","반도체","ai"]
-    if any(k in t for k in risk): return "🔴 주의"
-    if any(k in t for k in strong): return "🟢 긍정"
-    if any(k in t for k in watch): return "🟠 중요"
-    return "🟡 일반"
 
-def render_hanav_news(query, limit=7):
+def _infer_region_asset(etf_name,index_name):
+    n=_norm_theme_text(f'{etf_name} {index_name}')
+
+    overseas=[
+        '미국','s&p','sp500','nasdaq','나스닥','dow','다우','russell','러셀',
+        'global','글로벌','world','msci','china','중국','japan','일본','india','인도',
+        'vietnam','베트남','europe','유럽','taiwan','대만','emerging','신흥국',
+        '해외','treasury','미국채'
+    ]
+    region='해외자산' if any(_norm_theme_text(x) in n for x in overseas) else '국내자산'
+
+    if any(_norm_theme_text(x) in n for x in ['리츠','reit']):
+        asset='리츠'
+    elif any(_norm_theme_text(x) in n for x in [
+        '채권','국고채','국채','회사채','통안채','bond','treasury','하이일드'
+    ]):
+        asset='채권'
+    elif any(_norm_theme_text(x) in n for x in [
+        '원자재','commodity','gold','골드','silver','원유','oil','천연가스','구리','copper'
+    ]):
+        asset='원자재'
+    elif any(_norm_theme_text(x) in n for x in ['혼합','자산배분','멀티에셋','multiasset']):
+        asset='혼합자산'
+    else:
+        asset='주식'
+
+    if asset not in TREE.get(region,{}):
+        asset='주식'
+    return region,asset
+
+
+# V0.1 샘플 스키마. 실제 ETF 결과는 다음 단계의 수집 DB가 연결되기 전에는 생성하지 않는다.
+ETF_COLUMNS=['etf_code','etf_name','issuer','asset_region','asset_class','sector','subsector','aum','turnover','fee','index_name','as_of','source','collected_at']
+HOLDING_COLUMNS=['etf_code','holding_code','holding_name','weight','quantity','as_of','source','collected_at']
+
+from datetime import timedelta
+from pathlib import Path
+import json, time, inspect
+
+DATA_DIR=Path(__file__).resolve().parent/'data'
+DATA_DIR.mkdir(exist_ok=True)
+MASTER_FILE=DATA_DIR/'etf_master.csv'
+HOLDINGS_FILE=DATA_DIR/'etf_holdings.csv'
+STATUS_FILE=DATA_DIR/'collection_status.json'
+DB_FILE=DATA_DIR/'etf_finder.db'
+
+def _secret_or_env(name):
     try:
-        items=hanav_google_news(query,limit)
-    except Exception as e:
-        st.warning(f"뉴스를 불러오지 못했습니다: {e}")
-        return
-    if not items:
-        st.caption("표시할 최신 뉴스가 없습니다.")
-        return
-    for n in items:
-        tag=hanav_news_impact(n["title"])
-        source=f' · {html.escape(n["source"])}' if n["source"] else ""
-        title=html.escape(n["title"])
-        link=html.escape(n["link"],quote=True)
-        st.markdown(
-            f'<div style="background:#FFFFFF;border:1px solid #CDDED6;border-radius:7px;'
-            f'padding:8px 10px;margin:6px 0;">'
-            f'<div style="font-size:11px;color:#60766E;">{tag}{source}</div>'
-            f'<a href="{link}" target="_blank" style="color:#203D35;text-decoration:none;'
-            f'font-weight:750;font-size:13px;line-height:1.4;">{title}</a></div>',
-            unsafe_allow_html=True
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
+    return os.getenv(name, '').strip()
+
+def _import_pykrx():
+    # KRX 로그인 정보는 .streamlit/secrets.toml 또는 Streamlit Cloud Secrets에서 자동 사용.
+    krx_id=_secret_or_env('KRX_ID')
+    krx_pw=_secret_or_env('KRX_PW')
+    if not krx_id or not krx_pw:
+        raise RuntimeError(
+            'KRX 로그인 정보가 없습니다. '
+            '로컬은 .streamlit/secrets.toml, Streamlit Cloud는 App Settings → Secrets에 '
+            'KRX_ID와 KRX_PW를 저장해 주세요.'
         )
 
-def fmt_profit(v):
-    if v is None or pd.isna(v): return "-"
-    # 원 단위 → 억원
-    return f"{v/1e8:,.0f}억"
+    os.environ['KRX_ID']=krx_id
+    os.environ['KRX_PW']=krx_pw
 
-def fmt_metric(v, suffix=""):
-    if v is None or pd.isna(v): return "-"
-    return f"{v:,.2f}{suffix}"
-
-def profit_trend_label(df):
-    if df is None or df.empty or len(df)<2: return "판단 데이터 부족"
-    vals=pd.to_numeric(df['영업이익'],errors='coerce').dropna()
-    if len(vals)<2: return "판단 데이터 부족"
-    a,b=float(vals.iloc[-2]),float(vals.iloc[-1])
-    base=max(abs(a),1.0)
-    ch=(b-a)/base*100
-    if ch>=10: return f"↗ 개선 ({ch:+.1f}%)"
-    if ch<=-10: return f"↘ 악화 ({ch:+.1f}%)"
-    return f"→ 정체 ({ch:+.1f}%)"
-
-
-def _safe_series_value(df, year, col):
     try:
-        row=df[df["연도"]==year]
-        if row.empty: return None
-        v=pd.to_numeric(pd.Series([row.iloc[0][col]]),errors="coerce").iloc[0]
-        return None if pd.isna(v) else float(v)
+        import pykrx
+        from pykrx import stock
+        ver=getattr(pykrx,'__version__',getattr(pykrx,'version',''))
+        return stock, f'pykrx {ver}'.strip()
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            'pykrx가 현재 Streamlit Cloud 환경에 설치되지 않았습니다. '
+            'GitHub 저장소에서 app.py와 requirements.txt가 같은 폴더에 있는지 확인한 뒤 '
+            'Streamlit Cloud를 재부팅(Reboot)해 주세요. '
+            'requirements.txt에는 pykrx==1.2.9가 포함되어 있어야 합니다.'
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f'pykrx 로딩 실패: {e}') from e
+
+def _candidate_dates(days=12):
+    d=datetime.now()
+    for _ in range(days):
+        if d.weekday()<5: yield d.strftime('%Y%m%d')
+        d-=timedelta(days=1)
+
+def _find_latest_market_date(stock):
+    last_error=None
+    for ds in _candidate_dates(20):
+        try:
+            tickers=stock.get_etf_ticker_list(ds)
+            if tickers:
+                return ds,list(tickers)
+        except Exception as e:
+            last_error=e
+    msg=str(last_error or '데이터 없음')
+    raise RuntimeError(f'최근 ETF 기준일을 확인하지 못했습니다: {msg}')
+
+def _pick_col(df,candidates):
+    for c in candidates:
+        if c in df.columns: return c
+    return None
+
+def _num(v):
+    try: return float(str(v).replace(',','').replace('%','').strip())
     except Exception: return None
 
-def _pct_change(a,b):
-    if a is None or b is None or abs(a)<1e-12: return None
-    return (b-a)/abs(a)*100.0
 
-def investor_df(rows):
-    """KIS investor-trade-by-stock-daily output2 -> 표준 수급 DataFrame."""
-    if not rows:
-        return pd.DataFrame(columns=["date","개인","외국인","기관"])
+def _get_etf_pdf(stock, ticker, asof):
+    """Installed pykrx signature에 맞춰 ETF PDF를 안전하게 호출."""
+    fn = stock.get_etf_portfolio_deposit_file
+    try:
+        params = list(inspect.signature(fn).parameters.keys())
+    except Exception:
+        params = []
 
-    df = pd.DataFrame(rows).copy()
-    colmap = {
-        "stck_bsop_date": "date",
-        "prsn_ntby_qty": "개인",
-        "frgn_ntby_qty": "외국인",
-        "orgn_ntby_qty": "기관",
+    if params:
+        first = params[0].lower()
+        if "date" in first or first in ("fromdate", "trddate"):
+            return fn(asof, ticker)
+        if "ticker" in first or "code" in first:
+            return fn(ticker, asof)
+
+    errors = []
+    for args in ((asof, ticker), (ticker, asof)):
+        try:
+            df = fn(*args)
+            if df is not None and not df.empty:
+                return df
+            errors.append(f"{args}: 빈 DataFrame")
+        except Exception as e:
+            errors.append(f"{args}: {e}")
+    raise RuntimeError("ETF PDF 조회 실패 · " + " | ".join(errors))
+
+def collect_krx_etf_snapshot(progress=None,pause=0.05):
+    stock,collector_mode=_import_pykrx()
+    asof,tickers=_find_latest_market_date(stock)
+    collected_at=datetime.now().isoformat(timespec='seconds')
+    master_rows=[]; holding_rows=[]; failures=[]
+    try:
+        ohlcv=stock.get_etf_ohlcv_by_ticker(asof)
+    except Exception:
+        ohlcv=pd.DataFrame()
+
+    total=len(tickers)
+    consecutive_failures=0
+    fail_fast_limit=5
+
+    for i,ticker in enumerate(tickers,1):
+        ticker=str(ticker).zfill(6)
+        try:
+            name=stock.get_etf_ticker_name(ticker) or ticker
+            turnover=None
+            if not ohlcv.empty and ticker in ohlcv.index and '거래대금' in ohlcv.columns:
+                turnover=_num(ohlcv.loc[ticker,'거래대금'])
+
+            pdf=_get_etf_pdf(stock,ticker,asof)
+            if pdf is None or pdf.empty:
+                raise RuntimeError('PDF 구성종목이 비어 있음')
+
+            d=pdf.reset_index().copy()
+            code_col=_pick_col(d,['티커','ticker','종목코드','구성종목코드','index']) or d.columns[0]
+            name_col=_pick_col(d,['구성종목명','종목명','name'])
+            weight_col=_pick_col(d,['비중','비중(%)','weight'])
+            qty_col=_pick_col(d,['계약수','수량','quantity'])
+            amount_col=_pick_col(d,['금액','평가금액','amount'])
+
+            amounts=pd.to_numeric(d[amount_col],errors='coerce') if amount_col else None
+            amount_total=float(amounts.fillna(0).sum()) if amounts is not None else 0.0
+            valid=0
+
+            for _,row in d.iterrows():
+                hcode=str(row.get(code_col,'')).strip()
+                if hcode.endswith('.0'):
+                    hcode=hcode[:-2]
+                if hcode.isdigit() and len(hcode)<=6:
+                    hcode=hcode.zfill(6)
+
+                hname=str(row.get(name_col,'')).strip() if name_col else ''
+                if not hname and hcode.isdigit() and len(hcode)==6:
+                    try:
+                        hname=stock.get_market_ticker_name(hcode) or hcode
+                    except Exception:
+                        hname=hcode
+                if not hname:
+                    hname=hcode or '기타자산'
+
+                w=_num(row.get(weight_col)) if weight_col else None
+                if w is None and amount_col and amount_total>0:
+                    w=(_num(row.get(amount_col)) or 0.0)/amount_total*100.0
+                q=_num(row.get(qty_col)) if qty_col else None
+
+                holding_rows.append({
+                    'etf_code':ticker,'holding_code':hcode,'holding_name':hname,
+                    'weight':round(float(w or 0),6),'quantity':q,'as_of':asof,
+                    'source':'KRX PDF (Portfolio Deposit File)',
+                    'collected_at':collected_at
+                })
+                valid+=1
+
+            if not valid:
+                raise RuntimeError('유효 구성종목 없음')
+
+            master_rows.append({
+                'etf_code':ticker,'etf_name':name,'issuer':'',
+                'asset_region':'','asset_class':'','sector':'','subsector':'',
+                'aum':None,'turnover':turnover,'fee':None,'index_name':'',
+                'as_of':asof,'source':'KRX Data Marketplace',
+                'collected_at':collected_at
+            })
+            consecutive_failures=0
+
+        except Exception as e:
+            failures.append({'etf_code':ticker,'error':str(e)[:600]})
+            consecutive_failures+=1
+            if not master_rows and consecutive_failures>=fail_fast_limit:
+                if progress:
+                    progress(i,total,ticker,len(failures))
+                sample=' / '.join(
+                    f"{x['etf_code']}: {x['error']}" for x in failures[-3:]
+                )
+                raise RuntimeError(
+                    f'ETF 목록 {total:,}개는 조회됐지만 구성종목 조회가 '
+                    f'연속 {fail_fast_limit}건 실패해 중단했습니다. 최근 오류: {sample}'
+                )
+
+        if progress:
+            progress(i,total,ticker,len(failures))
+        if pause:
+            time.sleep(pause)
+
+    master=pd.DataFrame(master_rows,columns=ETF_COLUMNS)
+    holdings=pd.DataFrame(holding_rows,columns=HOLDING_COLUMNS)
+
+    if master.empty or holdings.empty:
+        raise RuntimeError('수집 결과가 비어 있어 기존 DB를 변경하지 않았습니다.')
+
+    mt=MASTER_FILE.with_suffix('.tmp')
+    ht=HOLDINGS_FILE.with_suffix('.tmp')
+    master.to_csv(mt,index=False,encoding='utf-8-sig')
+    holdings.to_csv(ht,index=False,encoding='utf-8-sig')
+    mt.replace(MASTER_FILE)
+    ht.replace(HOLDINGS_FILE)
+
+    status={
+        'as_of':asof,'collected_at':collected_at,'total_etfs':total,
+        'success_etfs':len(master),'failed_etfs':len(failures),
+        'holding_rows':len(holdings),'failures':failures,
+        'source':f'KRX Data Marketplace / PDF (Portfolio Deposit File) · {collector_mode}'
     }
-    missing = [c for c in colmap if c not in df.columns]
-    if missing:
-        raise RuntimeError("KIS 수급 응답 필드 누락: " + ", ".join(missing))
+    STATUS_FILE.write_text(
+        json.dumps(status,ensure_ascii=False,indent=2),encoding='utf-8'
+    )
+    return master,holdings,status
 
-    out = df[list(colmap)].rename(columns=colmap)
-    out["date"] = pd.to_datetime(out["date"], format="%Y%m%d", errors="coerce")
-    for c in ["개인","외국인","기관"]:
-        out[c] = pd.to_numeric(
-            out[c].astype(str).str.replace(",", "", regex=False),
-            errors="coerce"
-        ).fillna(0)
 
-    out = (
-        out.dropna(subset=["date"])
-           .drop_duplicates(subset=["date"], keep="first")
-           .sort_values("date")
+def load_snapshot():
+    '''기존 CSV 스냅샷 호환용.'''
+    master=pd.read_csv(MASTER_FILE,dtype={'etf_code':str}) if MASTER_FILE.exists() else pd.DataFrame(columns=ETF_COLUMNS)
+    holdings=pd.read_csv(HOLDINGS_FILE,dtype={'etf_code':str,'holding_code':str}) if HOLDINGS_FILE.exists() else pd.DataFrame(columns=HOLDING_COLUMNS)
+    status=json.loads(STATUS_FILE.read_text(encoding='utf-8')) if STATUS_FILE.exists() else {}
+    for df in (master,holdings):
+        if 'etf_code' in df:
+            df['etf_code']=df['etf_code'].astype(str).str.zfill(6)
+    if 'holding_code' in holdings:
+        holdings['holding_code']=holdings['holding_code'].fillna('').astype(str)
+    return master,holdings,status
+
+
+# =========================================================
+# LOCAL SQLITE DB
+# =========================================================
+
+def _db_connect():
+    conn=sqlite3.connect(str(DB_FILE),timeout=30)
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    return conn
+
+
+def save_local_db(master,holdings):
+    '''수집 결과를 로컬 SQLite DB에 저장하고 검색 인덱스를 생성.'''
+    if master is None or master.empty or holdings is None or holdings.empty:
+        raise RuntimeError('저장할 ETF 데이터가 없습니다.')
+
+    m=master.copy()
+    h=holdings.copy()
+
+    for df in (m,h):
+        if 'etf_code' in df.columns:
+            df['etf_code']=df['etf_code'].astype(str).str.zfill(6)
+    if 'holding_code' in h.columns:
+        h['holding_code']=h['holding_code'].fillna('').astype(str)
+    if 'holding_name' in h.columns:
+        h['holding_name']=h['holding_name'].fillna('').astype(str)
+    if 'weight' in h.columns:
+        h['weight']=pd.to_numeric(h['weight'],errors='coerce').fillna(0.0)
+
+    with _db_connect() as conn:
+        m.to_sql('etf_master',conn,if_exists='replace',index=False)
+        h.to_sql('etf_holdings',conn,if_exists='replace',index=False)
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_master_etf_code ON etf_master(etf_code)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_master_tree ON etf_master(asset_region,asset_class,sector,subsector)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_hold_etf_code ON etf_holdings(etf_code)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_hold_stock_code ON etf_holdings(holding_code)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_hold_stock_name ON etf_holdings(holding_name)')
+        # 원본 ETF DB가 바뀌면 기존 자동 테마 매핑은 무효화
+        conn.execute('DROP TABLE IF EXISTS etf_theme_map')
+        conn.execute('DROP TABLE IF EXISTS theme_meta')
+        conn.commit()
+
+
+def migrate_existing_csv_to_db():
+    '''기존 CSV가 있으면 KRX 재조회 없이 최초 1회 SQLite DB로 변환.'''
+    if DB_FILE.exists():
+        return False
+    if not (MASTER_FILE.exists() and HOLDINGS_FILE.exists()):
+        return False
+
+    master,holdings,_=load_snapshot()
+    if master.empty or holdings.empty:
+        return False
+
+    save_local_db(master,holdings)
+    return True
+
+
+def db_available():
+    if not DB_FILE.exists():
+        return False
+    try:
+        with _db_connect() as conn:
+            row=conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='etf_master'"
+            ).fetchone()
+            row2=conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='etf_holdings'"
+            ).fetchone()
+        return bool(row and row2)
+    except Exception:
+        return False
+
+
+def db_token():
+    try:
+        return DB_FILE.stat().st_mtime_ns
+    except Exception:
+        return 0
+
+
+@st.cache_data(show_spinner=False)
+def load_master_db(_token):
+    if not db_available():
+        return pd.DataFrame(columns=ETF_COLUMNS)
+    with _db_connect() as conn:
+        df=pd.read_sql_query('SELECT * FROM etf_master',conn)
+    if 'etf_code' in df.columns:
+        df['etf_code']=df['etf_code'].astype(str).str.zfill(6)
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_holdings_preview_db(_token,limit=500):
+    if not db_available():
+        return pd.DataFrame(columns=HOLDING_COLUMNS)
+    with _db_connect() as conn:
+        df=pd.read_sql_query(
+            'SELECT * FROM etf_holdings ORDER BY etf_code, weight DESC LIMIT ?',
+            conn,params=(int(limit),)
+        )
+    return df
+
+
+def local_db_stats():
+    if not db_available():
+        return {'etfs':0,'holdings':0}
+    try:
+        with _db_connect() as conn:
+            etfs=conn.execute('SELECT COUNT(*) FROM etf_master').fetchone()[0]
+            holdings=conn.execute('SELECT COUNT(*) FROM etf_holdings').fetchone()[0]
+        return {'etfs':int(etfs or 0),'holdings':int(holdings or 0)}
+    except Exception:
+        return {'etfs':0,'holdings':0}
+
+
+def normalize_stock_query(x):
+    return str(x or '').strip().replace(' ','').lower()
+
+
+def reverse_search_etf_db(query_text,min_weight=0.0,require_all=True):
+    '''로컬 SQLite에서만 종목 역검색. 이 함수에서는 KRX/인터넷 호출을 하지 않음.'''
+    if not db_available():
+        return pd.DataFrame()
+
+    targets=[x.strip() for x in str(query_text).split(',') if x.strip()]
+    if not targets:
+        return pd.DataFrame()
+
+    parts=[]
+    with _db_connect() as conn:
+        for raw in targets:
+            key=normalize_stock_query(raw)
+
+            if key.isdigit():
+                code=key.zfill(6)
+                z=pd.read_sql_query(
+                    '''
+                    SELECT etf_code,holding_code,holding_name,weight,as_of,source
+                    FROM etf_holdings
+                    WHERE holding_code=?
+                    ''',
+                    conn,params=(code,)
+                )
+            else:
+                z=pd.read_sql_query(
+                    '''
+                    SELECT etf_code,holding_code,holding_name,weight,as_of,source
+                    FROM etf_holdings
+                    WHERE LOWER(REPLACE(holding_name,' ',''))=?
+                    ''',
+                    conn,params=(key,)
+                )
+                if z.empty and len(key)>=2:
+                    z=pd.read_sql_query(
+                        '''
+                        SELECT etf_code,holding_code,holding_name,weight,as_of,source
+                        FROM etf_holdings
+                        WHERE LOWER(REPLACE(holding_name,' ','')) LIKE ?
+                        ''',
+                        conn,params=(f'%{key}%',)
+                    )
+
+            if not z.empty:
+                z['_target']=raw
+                parts.append(z)
+
+    if not parts:
+        return pd.DataFrame()
+
+    hits=pd.concat(parts,ignore_index=True)
+    hits['weight']=pd.to_numeric(hits['weight'],errors='coerce').fillna(0.0)
+
+    agg=(hits.groupby('etf_code',as_index=False)
+             .agg(match_weight=('weight','sum'),
+                  match_count=('_target','nunique'),
+                  matched_stocks=('holding_name',lambda x:', '.join(dict.fromkeys(map(str,x)))),
+                  as_of=('as_of','max'),
+                  source=('source',lambda x:' / '.join(dict.fromkeys(str(v) for v in x if pd.notna(v))))))
+
+    if require_all:
+        agg=agg[agg['match_count']>=len(targets)]
+
+    agg=agg[agg['match_weight']>=float(min_weight)]
+    if agg.empty:
+        return pd.DataFrame()
+
+    codes=agg['etf_code'].astype(str).tolist()
+    placeholders=','.join('?' for _ in codes)
+    sql=(
+        'SELECT etf_code,etf_name,issuer,aum,turnover,fee,index_name '
+        f'FROM etf_master WHERE etf_code IN ({placeholders})'
+    )
+    with _db_connect() as conn:
+        master=pd.read_sql_query(sql,conn,params=codes)
+
+    out=agg.merge(master,on='etf_code',how='left')
+    order=[
+        c for c in [
+            'etf_name','etf_code','issuer','match_weight','matched_stocks',
+            'match_count','aum','turnover','fee','index_name','as_of','source'
+        ] if c in out.columns
+    ]
+    return (
+        out.sort_values(['match_weight','match_count'],ascending=[False,False])
+           [order]
            .reset_index(drop=True)
     )
+
+
+
+def _theme_source_signature():
+    if not db_available():
+        return ''
+    with _db_connect() as conn:
+        m=conn.execute(
+            "SELECT COUNT(*),COALESCE(MAX(collected_at),''),COALESCE(MAX(as_of),'') FROM etf_master"
+        ).fetchone()
+        h=conn.execute(
+            "SELECT COUNT(*),COALESCE(MAX(collected_at),''),COALESCE(MAX(as_of),'') FROM etf_holdings"
+        ).fetchone()
+    return f'{m[0]}|{m[1]}|{m[2]}|{h[0]}|{h[1]}|{h[2]}|{THEME_RULES_VERSION}'
+
+
+def _saved_theme_signature():
+    try:
+        with _db_connect() as conn:
+            ok=conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='theme_meta'"
+            ).fetchone()
+            if not ok:
+                return ''
+            row=conn.execute(
+                "SELECT value FROM theme_meta WHERE key='source_signature'"
+            ).fetchone()
+        return row[0] if row else ''
+    except Exception:
+        return ''
+
+
+def _score_keywords(name_n,index_n,holdings,keywords):
+    score=0.0
+    evidence=[]
+
+    for kw in keywords:
+        if kw in name_n:
+            score+=8.0
+            evidence.append(f'ETF명:{kw}')
+        if kw in index_n:
+            score+=5.0
+            evidence.append(f'지수:{kw}')
+
+    for hname_n,hname_raw,weight in holdings:
+        if any(kw in hname_n for kw in keywords):
+            w=max(float(weight or 0),0.0)
+            score+=min(3.2,0.7+w/10.0)
+            evidence.append(f'구성:{hname_raw}({w:.1f}%)')
+
+    return score,evidence
+
+
+def _company_hint_scores(holdings):
+    sector_score={}
+    sub_score={}
+    ev={}
+    for hname_n,hname_raw,weight in holdings:
+        w=max(float(weight or 0),0.0)
+        for company,hints in COMPANY_THEME_HINTS.items():
+            if _norm_theme_text(company) in hname_n:
+                bonus=min(5.0,1.4+w/7.0)
+                for sector,sub in hints:
+                    sector_score[sector]=sector_score.get(sector,0.0)+bonus
+                    ev.setdefault(('s',sector),[]).append(f'구성:{hname_raw}({w:.1f}%)')
+                    if sub:
+                        sub_score[(sector,sub)]=sub_score.get((sector,sub),0.0)+bonus+0.8
+                        ev.setdefault(('d',sector,sub),[]).append(f'구성:{hname_raw}({w:.1f}%)')
+    return sector_score,sub_score,ev
+
+
+def build_theme_map():
+    """현재 SQLite DB만 사용해 자동 테마 매핑 생성. KRX/인터넷 호출 없음."""
+    if not db_available():
+        return {'mapped_etfs':0,'rows':0,'generated_at':''}
+
+    with _db_connect() as conn:
+        master_df=pd.read_sql_query(
+            'SELECT etf_code,etf_name,index_name,issuer,as_of FROM etf_master',
+            conn
+        )
+        holdings_df=pd.read_sql_query(
+            'SELECT etf_code,holding_name,weight FROM etf_holdings',
+            conn
+        )
+
+    if master_df.empty:
+        return {'mapped_etfs':0,'rows':0,'generated_at':''}
+
+    master_df['etf_code']=master_df['etf_code'].astype(str).str.zfill(6)
+    holdings_df['etf_code']=holdings_df['etf_code'].astype(str).str.zfill(6)
+    holdings_df['weight']=pd.to_numeric(holdings_df['weight'],errors='coerce').fillna(0.0)
+    holdings_df=holdings_df.sort_values(['etf_code','weight'],ascending=[True,False])
+
+    groups={}
+    for code,g in holdings_df.groupby('etf_code',sort=False):
+        rows=[]
+        for _,r in g.head(40).iterrows():
+            raw=str(r.get('holding_name','') or '')
+            if raw:
+                rows.append((_norm_theme_text(raw),raw,float(r.get('weight',0) or 0)))
+        groups[code]=rows
+
+    generated_at=datetime.now().isoformat(timespec='seconds')
+    mapped={}
+
+    for _,m in master_df.iterrows():
+        code=m['etf_code']
+        etf_name=str(m.get('etf_name','') or '')
+        index_name=str(m.get('index_name','') or '')
+        name_n=_norm_theme_text(etf_name)
+        index_n=_norm_theme_text(index_name)
+        hrows=groups.get(code,[])
+
+        region,asset=_infer_region_asset(etf_name,index_name)
+        sector_tree=TREE.get(region,{}).get(asset,{})
+        if not sector_tree:
+            continue
+
+        hint_sector,hint_sub,hint_ev=_company_hint_scores(hrows)
+
+        for sector,sub_list in sector_tree.items():
+            sec_score,sec_ev=_score_keywords(
+                name_n,index_n,hrows,_theme_keywords(sector)
+            )
+            sec_score+=hint_sector.get(sector,0.0)
+            sec_ev+=hint_ev.get(('s',sector),[])
+
+            detail=[]
+            best_sub=0.0
+            for sub in sub_list:
+                if sub=='전체':
+                    continue
+                sub_score,sub_ev=_score_keywords(
+                    name_n,index_n,hrows,_theme_keywords(sub)
+                )
+                sub_score+=hint_sub.get((sector,sub),0.0)
+                sub_ev+=hint_ev.get(('d',sector,sub),[])
+                best_sub=max(best_sub,sub_score)
+
+                if sub_score>=3.0:
+                    detail.append((sub,sub_score,sub_ev))
+
+            overall=max(sec_score,best_sub*0.72)
+
+            if overall>=2.8:
+                ev=list(dict.fromkeys(sec_ev))
+                if not ev and detail:
+                    ev=list(dict.fromkeys(detail[0][2]))
+                mapped[(code,region,asset,sector,'전체')]={
+                    'etf_code':code,
+                    'region':region,
+                    'asset_class':asset,
+                    'sector':sector,
+                    'subsector':'전체',
+                    'score':round(overall,2),
+                    'evidence':' · '.join(ev[:6]) or '세부분야 신호',
+                    'generated_at':generated_at,
+                    'rules_version':THEME_RULES_VERSION
+                }
+
+            for sub,sub_score,sub_ev in detail:
+                mapped[(code,region,asset,sector,sub)]={
+                    'etf_code':code,
+                    'region':region,
+                    'asset_class':asset,
+                    'sector':sector,
+                    'subsector':sub,
+                    'score':round(sub_score,2),
+                    'evidence':' · '.join(list(dict.fromkeys(sub_ev))[:6]) or f'{sub} 키워드',
+                    'generated_at':generated_at,
+                    'rules_version':THEME_RULES_VERSION
+                }
+
+    cols=[
+        'etf_code','region','asset_class','sector','subsector',
+        'score','evidence','generated_at','rules_version'
+    ]
+    theme_df=pd.DataFrame(list(mapped.values()),columns=cols)
+
+    with _db_connect() as conn:
+        if theme_df.empty:
+            conn.execute('DROP TABLE IF EXISTS etf_theme_map')
+            conn.execute(
+                'CREATE TABLE etf_theme_map('
+                'etf_code TEXT,region TEXT,asset_class TEXT,sector TEXT,'
+                'subsector TEXT,score REAL,evidence TEXT,generated_at TEXT,rules_version TEXT)'
+            )
+        else:
+            theme_df.to_sql('etf_theme_map',conn,if_exists='replace',index=False)
+
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_theme_tree '
+            'ON etf_theme_map(region,asset_class,sector,subsector)'
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_theme_code ON etf_theme_map(etf_code)'
+        )
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS theme_meta(key TEXT PRIMARY KEY,value TEXT)'
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO theme_meta(key,value) VALUES('source_signature',?)",
+            (_theme_source_signature(),)
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO theme_meta(key,value) VALUES('generated_at',?)",
+            (generated_at,)
+        )
+        conn.commit()
+
+    return {
+        'mapped_etfs':int(theme_df['etf_code'].nunique()) if not theme_df.empty else 0,
+        'rows':int(len(theme_df)),
+        'generated_at':generated_at
+    }
+
+
+def theme_map_stats():
+    if not db_available():
+        return {'mapped_etfs':0,'rows':0,'generated_at':''}
+    try:
+        with _db_connect() as conn:
+            ok=conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='etf_theme_map'"
+            ).fetchone()
+            if not ok:
+                return {'mapped_etfs':0,'rows':0,'generated_at':''}
+            row=conn.execute(
+                "SELECT COUNT(DISTINCT etf_code),COUNT(*),"
+                "COALESCE(MAX(generated_at),'') FROM etf_theme_map"
+            ).fetchone()
+        return {
+            'mapped_etfs':int(row[0] or 0),
+            'rows':int(row[1] or 0),
+            'generated_at':str(row[2] or '')
+        }
+    except Exception:
+        return {'mapped_etfs':0,'rows':0,'generated_at':''}
+
+
+def ensure_theme_map(force=False):
+    if not db_available():
+        return {'rebuilt':False,'mapped_etfs':0,'rows':0,'generated_at':''}
+    current=_theme_source_signature()
+    saved=_saved_theme_signature()
+    if force or not saved or saved!=current:
+        info=build_theme_map()
+        info['rebuilt']=True
+        return info
+    info=theme_map_stats()
+    info['rebuilt']=False
+    return info
+
+
+def search_theme_db(region,asset,sector,subsector):
+    """선택된 테크트리 조건을 로컬 자동매핑 테이블에서 검색."""
+    if not db_available():
+        return pd.DataFrame()
+
+    sql=(
+        'SELECT m.etf_name,m.etf_code,m.issuer,m.aum,m.turnover,m.fee,'
+        'm.index_name,m.as_of,t.score AS theme_score,t.evidence AS match_evidence '
+        'FROM etf_theme_map t '
+        'JOIN etf_master m ON m.etf_code=t.etf_code '
+        'WHERE t.region=? AND t.asset_class=? AND t.sector=? AND t.subsector=? '
+        'ORDER BY t.score DESC,COALESCE(m.turnover,0) DESC,m.etf_name'
+    )
+    try:
+        with _db_connect() as conn:
+            df=pd.read_sql_query(
+                sql,conn,params=(region,asset,sector,subsector)
+            )
+        if not df.empty:
+            df['etf_code']=df['etf_code'].astype(str).str.zfill(6)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# =========================================================
+# ETF DETAIL VIEW
+# 검색 결과 행 클릭 → 가격차트 + 구성종목
+# =========================================================
+
+@st.cache_data(show_spinner=False)
+def get_etf_holdings_local(etf_code,_db_token):
+    if not db_available():
+        return pd.DataFrame(columns=HOLDING_COLUMNS)
+
+    code=str(etf_code).zfill(6)
+    sql=(
+        "SELECT holding_code,holding_name,weight,quantity,as_of,source "
+        "FROM etf_holdings WHERE etf_code=? "
+        "ORDER BY weight DESC,holding_name"
+    )
+    with _db_connect() as conn:
+        df=pd.read_sql_query(sql,conn,params=(code,))
+
+    if 'weight' in df.columns:
+        df['weight']=pd.to_numeric(df['weight'],errors='coerce').fillna(0.0)
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def get_etf_master_local(etf_code,_db_token):
+    if not db_available():
+        return {}
+
+    code=str(etf_code).zfill(6)
+    sql="SELECT * FROM etf_master WHERE etf_code=? LIMIT 1"
+    with _db_connect() as conn:
+        df=pd.read_sql_query(sql,conn,params=(code,))
+    return df.iloc[0].to_dict() if not df.empty else {}
+
+
+@st.cache_data(ttl=1800,show_spinner=False)
+def get_etf_price_history(etf_code,period_label):
+    days_map={'1개월':45,'3개월':120,'6개월':230,'1년':420}
+    days=days_map.get(period_label,230)
+
+    end=datetime.now()
+    start=end-timedelta(days=days)
+
+    stock,_collector_mode=_import_pykrx()
+    df=stock.get_etf_ohlcv_by_date(
+        start.strftime('%Y%m%d'),
+        end.strftime('%Y%m%d'),
+        str(etf_code).zfill(6)
+    )
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out=df.reset_index().copy()
+
+    date_col=None
+    for c in ['날짜','Date','date','index']:
+        if c in out.columns:
+            date_col=c
+            break
+    if date_col is None:
+        date_col=out.columns[0]
+
+    out[date_col]=pd.to_datetime(out[date_col],errors='coerce')
+    out=out.dropna(subset=[date_col])
+
+    if '종가' not in out.columns:
+        return pd.DataFrame()
+
+    out['종가']=pd.to_numeric(out['종가'],errors='coerce')
+    out=out.dropna(subset=['종가'])
+    out=out.rename(columns={date_col:'날짜'})
     return out
 
-def investor_summary(df,days):
-    if df is None or df.empty: return {"개인":0.0,"외국인":0.0,"기관":0.0}
-    x=df.tail(min(days,len(df)))
-    return {c:float(x[c].sum()) for c in ["개인","외국인","기관"]}
 
-def fmt_qty(v):
-    sign="+" if v>0 else ""
-    av=abs(v)
-    if av>=1000000: return f"{sign}{v/1000000:,.2f}백만주"
-    if av>=10000: return f"{sign}{v/10000:,.1f}만주"
-    return f"{sign}{v:,.0f}주"
+def _set_selected_etf(etf_code,etf_name='',source=''):
+    st.session_state['selected_etf_code']=str(etf_code).zfill(6)
+    st.session_state['selected_etf_name']=str(etf_name or '')
+    st.session_state['selected_etf_source']=str(source or '')
 
-def investor_interpretation(df):
-    if df is None or df.empty:
-        return "투자자별 수급 데이터를 불러오지 못했습니다.", "수급 데이터 확인이 필요합니다."
-    s5=investor_summary(df,5); s20=investor_summary(df,20)
-    parts=[
-        f"최근 5거래일: 개인 {fmt_qty(s5['개인'])}, 외국인 {fmt_qty(s5['외국인'])}, 기관 {fmt_qty(s5['기관'])}.",
-        f"최근 20거래일: 개인 {fmt_qty(s20['개인'])}, 외국인 {fmt_qty(s20['외국인'])}, 기관 {fmt_qty(s20['기관'])}."
-    ]
-    if s5["외국인"]>0 and s5["기관"]>0:
-        parts.append("단기적으로 외국인과 기관이 동반 순매수입니다.")
-        signal="외국인·기관 동반 순매수"
-    elif s5["외국인"]<0 and s5["기관"]<0:
-        parts.append("단기적으로 외국인과 기관이 동반 순매도입니다.")
-        signal="외국인·기관 동반 순매도"
-    elif s5["외국인"]>0 and s5["기관"]<0:
-        parts.append("외국인은 순매수, 기관은 순매도로 주요 주체의 방향이 엇갈립니다.")
-        signal="외국인 매수·기관 매도"
-    elif s5["외국인"]<0 and s5["기관"]>0:
-        parts.append("기관은 순매수, 외국인은 순매도로 주요 주체의 방향이 엇갈립니다.")
-        signal="기관 매수·외국인 매도"
-    else:
-        signal="수급 혼조"
-    if s20["외국인"]>0 and s20["기관"]>0:
-        parts.append("20거래일 누적으로도 외국인·기관 매수 우위가 확인됩니다.")
-    elif s20["외국인"]<0 and s20["기관"]<0:
-        parts.append("20거래일 누적으로도 외국인·기관 매도 우위가 확인됩니다.")
-    return " ".join(parts), signal
 
-def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name,flow_df=None):
-    sections={}; risks=[]
-    op25=_safe_series_value(fund,2025,"영업이익"); op28=_safe_series_value(fund,2028,"영업이익")
-    eps25=_safe_series_value(fund,2025,"EPS"); eps28=_safe_series_value(fund,2028,"EPS")
-    roe25=_safe_series_value(fund,2025,"ROE"); roe28=_safe_series_value(fund,2028,"ROE")
-    opg=_pct_change(op25,op28); epsg=_pct_change(eps25,eps28)
-    perf=[]
-    if opg is not None:
-        direction="증가" if opg>5 else ("감소" if opg<-5 else "보합")
-        perf.append(f"영업이익은 2025A 대비 2028E {direction} 흐름({opg:+.1f}%)입니다.")
-        if opg<-5: risks.append("2028E 영업이익이 2025A보다 낮은 추정치입니다.")
-    if epsg is not None:
-        direction="증가" if epsg>5 else ("감소" if epsg<-5 else "보합")
-        perf.append(f"EPS는 2025A 대비 2028E {direction} 흐름({epsg:+.1f}%)입니다.")
-        if epsg<-5: risks.append("EPS 컨센서스가 장기적으로 둔화되는 흐름입니다.")
-    if roe25 is not None and roe28 is not None:
-        diff=roe28-roe25
-        perf.append(f"ROE는 {roe25:.2f}% → {roe28:.2f}%로 {diff:+.2f}%p 변화가 예상됩니다.")
-        if diff<-0.5: risks.append("ROE 추정치 하락 여부를 확인할 필요가 있습니다.")
-    sections["실적"]=" ".join(perf) if perf else "2025A~2028E 실적 데이터가 부족해 추세 판정이 어렵습니다."
 
-    per25=_safe_series_value(fund,2025,"PER"); per26=_safe_series_value(fund,2026,"PER"); per28=_safe_series_value(fund,2028,"PER")
-    vals=[]
-    if per25 is not None: vals.append(f"2025A {per25:.2f}배")
-    if per26 is not None: vals.append(f"2026E {per26:.2f}배")
-    if per28 is not None: vals.append(f"2028E {per28:.2f}배")
-    vt=("PER은 "+", ".join(vals)+"입니다.") if vals else "PER 컨센서스 데이터가 부족합니다."
-    if per26 is not None and per28 is not None:
-        if epsg is not None and epsg>5 and per28<per26:
-            vt+=" EPS 성장과 함께 Forward PER이 낮아져 추정실적 기준 밸류에이션 부담이 완화되는 방향입니다."
-        elif epsg is not None and epsg<-5:
-            vt+=" PER 하락이 이익 감소와 함께 나타나면 단순 저평가로 해석하기 어렵습니다."
-        elif per28>per26*1.15:
-            vt+=" Forward PER이 확대되는 흐름이므로 향후 이익 증가가 기대를 충족하는지 확인할 필요가 있습니다."
-        else:
-            vt+=" Forward PER 변화가 크지 않아 실적 추정치의 방향성이 더 중요합니다."
-    sections["밸류에이션"]=vt
+class _ETFHTMLTableParser(HTMLParser):
+    """외부 ETF 구성종목 페이지의 HTML 표를 표준 라이브러리만으로 읽는 간단 파서."""
+    def __init__(self):
+        super().__init__()
+        self.tables=[]
+        self._in_table=False
+        self._in_row=False
+        self._in_cell=False
+        self._table=[]
+        self._row=[]
+        self._cell=[]
 
-    tech=[]
-    if chart_df is not None and not chart_df.empty:
-        last=chart_df.iloc[-1]; px=float(last.get("close",current_price) or current_price)
-        mas={}
-        for ma in ["MA5","MA20","MA60","MA120"]:
-            try:
-                v=float(last[ma])
-                if pd.notna(v): mas[ma]=v
-            except Exception: pass
-        above=[m for m,v in mas.items() if px>v]; below=[m for m,v in mas.items() if px<v]
-        tech.append(f"{period_name} 기준입니다.")
-        if above: tech.append(f"현재가는 {', '.join(above)} 위에 있습니다.")
-        if below: tech.append(f"현재가는 {', '.join(below)} 아래에 있습니다.")
-        if all(m in mas for m in ["MA5","MA20","MA60","MA120"]):
-            if mas["MA5"]>mas["MA20"]>mas["MA60"]>mas["MA120"]:
-                tech.append("MA5·20·60·120이 정배열입니다.")
-            elif mas["MA5"]<mas["MA20"]<mas["MA60"]<mas["MA120"]:
-                tech.append("MA5·20·60·120이 역배열입니다."); risks.append("이동평균선이 역배열 상태입니다.")
-            else: tech.append("이동평균선은 혼조 배열입니다.")
-        try:
-            vols=pd.to_numeric(chart_df["volume"],errors="coerce").dropna()
-            if len(vols)>=21:
-                recent=float(vols.iloc[-1]); avg20=float(vols.iloc[-21:-1].mean())
-                vr=recent/avg20 if avg20>0 else None
-                if vr is not None:
-                    label="확대" if vr>=1.5 else ("감소" if vr<=0.7 else "평균 수준")
-                    tech.append(f"최근 거래량은 직전 20개 봉 평균의 {vr:.1f}배로 {label} 상태입니다.")
-        except Exception: pass
-    sections["차트"]=" ".join(tech) if tech else "차트 데이터가 부족해 기술적 분석을 할 수 없습니다."
+    def handle_starttag(self,tag,attrs):
+        tag=tag.lower()
+        if tag=='table':
+            self._in_table=True
+            self._table=[]
+        elif self._in_table and tag=='tr':
+            self._in_row=True
+            self._row=[]
+        elif self._in_row and tag in ('td','th'):
+            self._in_cell=True
+            self._cell=[]
+        elif self._in_cell and tag=='br':
+            self._cell.append(' ')
 
-    flow_text,flow_signal=investor_interpretation(flow_df)
-    sections["수급"]=flow_text
-    if flow_signal=="외국인·기관 동반 순매도":
-        risks.append("최근 5거래일 외국인과 기관이 동반 순매도입니다.")
+    def handle_data(self,data):
+        if self._in_cell:
+            self._cell.append(data)
 
-    positives=0
-    if opg is not None and opg>5: positives+=1
-    if epsg is not None and epsg>5: positives+=1
-    if roe25 is not None and roe28 is not None and roe28>roe25+0.5: positives+=1
-    if chart_df is not None and not chart_df.empty:
-        try:
-            last=chart_df.iloc[-1]
-            if float(last["close"])>float(last["MA20"]): positives+=1
-            if float(last["close"])>float(last["MA60"]): positives+=1
-        except Exception: pass
-    if flow_signal=="외국인·기관 동반 순매수": positives+=1
-    sections["종합"]=("실적과 기술지표에서 긍정적인 항목이 상대적으로 많이 확인됩니다." if positives>=4 else
-                    "실적 또는 기술지표에서 뚜렷한 개선 신호가 제한적이므로 개별 지표 확인이 중요합니다." if positives<=1 else
-                    "긍정 요인과 확인이 필요한 요인이 함께 나타나는 혼조 상태입니다.")
-    sections["체크포인트"]=" ".join(dict.fromkeys(risks)) if risks else "현재 규칙에서 두드러진 경고 항목은 없지만 2026E~2028E 컨센서스는 변경될 수 있습니다."
-    return sections
+    def handle_endtag(self,tag):
+        tag=tag.lower()
+        if self._in_cell and tag in ('td','th'):
+            value=' '.join(''.join(self._cell).split())
+            self._row.append(value)
+            self._in_cell=False
+            self._cell=[]
+        elif self._in_row and tag=='tr':
+            if any(str(x).strip() for x in self._row):
+                self._table.append(self._row)
+            self._in_row=False
+            self._row=[]
+        elif self._in_table and tag=='table':
+            if self._table:
+                self.tables.append(self._table)
+            self._in_table=False
+            self._table=[]
 
-def render_analysis_card(title,body):
-    html=("<div style='background:#FFFFFF;border:1px solid #C8DBD3;border-radius:7px;padding:12px 14px;margin:7px 0;'>"
-          f"<div style='color:#007B69;font-size:15px;font-weight:900;margin-bottom:6px;'>{title}</div>"
-          f"<div style='color:#29483D;font-size:13px;line-height:1.65;'>{body}</div></div>")
-    st.markdown(html,unsafe_allow_html=True)
 
-def fig(d,n,c):
-    """HTS형 가격 + 거래량 차트. Plotly subplot을 명시적으로 구성한다."""
-    if d is None or d.empty:
+def _parse_weight_number(value):
+    s=str(value or '').replace(',','').replace('%','').strip()
+    if not s or s in ('-','--','nan','None'):
+        return None
+    m=re.search(r'-?\d+(?:\.\d+)?',s)
+    if not m:
+        return None
+    try:
+        return float(m.group())
+    except Exception:
         return None
 
-    f = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.015,
-        row_heights=[0.78, 0.22]
+
+def _clean_external_holding_name(value):
+    s=' '.join(str(value or '').split())
+    # FunETF 등에서 "한글명/English Name (TICKER)" 형식이면 표시명을 조금 정리
+    if '/' in s:
+        left,right=s.split('/',1)
+        if right.strip():
+            s=right.strip()
+    s=re.sub(r'\s*\([A-Z0-9.\-]+\)\s*$','',s).strip()
+    return s
+
+
+def _extract_holdings_from_html(html_text,source_label):
+    parser=_ETFHTMLTableParser()
+    parser.feed(html_text or '')
+
+    candidates=[]
+
+    for table in parser.tables:
+        header_idx=None
+        name_idx=None
+        weight_idx=None
+
+        for i,row in enumerate(table[:8]):
+            norm=[re.sub(r'\s+','',str(x)).lower() for x in row]
+            for j,cell in enumerate(norm):
+                if name_idx is None and ('종목명' in cell or cell in ('name','holding','holdings')):
+                    name_idx=j
+                if weight_idx is None and ('비중' in cell or 'weight' in cell):
+                    weight_idx=j
+            if name_idx is not None and weight_idx is not None:
+                header_idx=i
+                break
+
+        if header_idx is None:
+            continue
+
+        rows=[]
+        for row in table[header_idx+1:]:
+            if max(name_idx,weight_idx)>=len(row):
+                continue
+            name=_clean_external_holding_name(row[name_idx])
+            weight=_parse_weight_number(row[weight_idx])
+
+            if not name or weight is None:
+                continue
+            if weight<0 or weight>100:
+                continue
+
+            # 현금/선물환은 주요 주식 구성종목 표에서 제외
+            name_n=_norm_theme_text(name)
+            if any(x in name_n for x in [
+                '설정현금액','원화현금','현금','cash',
+                '외국환포워드','fxfwd','선물환'
+            ]):
+                continue
+
+            rows.append({
+                'holding_name':name,
+                'weight':float(weight),
+                'source':source_label
+            })
+
+        if rows:
+            df=pd.DataFrame(rows)
+            df=df.drop_duplicates(subset=['holding_name'],keep='first')
+            df=df.sort_values('weight',ascending=False).reset_index(drop=True)
+            candidates.append(df)
+
+    if not candidates:
+        return pd.DataFrame(columns=['holding_name','weight','source'])
+
+    # 행이 가장 많은 유효 표를 우선 사용
+    candidates.sort(key=lambda x:(len(x),x['weight'].sum()),reverse=True)
+    return candidates[0]
+
+
+def _extract_basis_date_from_html(html_text):
+    plain=re.sub(r'<[^>]+>',' ',html_text or '')
+    plain=' '.join(plain.split())
+
+    patterns=[
+        r'(\d{4})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})일?\s*기준',
+        r'(\d{2})[.\-/]\s*(\d{1,2})[.\-/]\s*(\d{1,2})\s*기준',
+    ]
+    for p in patterns:
+        m=re.search(p,plain)
+        if not m:
+            continue
+        y,mn,d=m.groups()
+        if len(y)==2:
+            y='20'+y
+        try:
+            return f'{int(y):04d}{int(mn):02d}{int(d):02d}'
+        except Exception:
+            pass
+    return ''
+
+
+@st.cache_data(ttl=21600,show_spinner=False)
+def get_foreign_etf_weights(etf_code,etf_name):
+    """
+    KRX PDF가 해외 구성종목 비중을 0으로 제공하는 ETF에 한해
+    선택한 ETF의 실제 공개 비중 데이터를 보완 조회한다.
+    앱 전체 DB를 다시 수집하지 않는다.
+    """
+    code=str(etf_code).zfill(6)
+    name=str(etf_name or '')
+    isin=''
+
+    try:
+        stock,_mode=_import_pykrx()
+        isin=str(stock.get_etf_isin(code) or '').strip()
+    except Exception:
+        isin=''
+
+    headers={
+        'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                     'AppleWebKit/537.36 Chrome/130 Safari/537.36',
+        'Accept-Language':'ko-KR,ko;q=0.9,en;q=0.7'
+    }
+
+    sources=[]
+
+    # TIGER는 운용사 공개 페이지를 우선 시도
+    if isin and name.upper().startswith('TIGER'):
+        sources.append((
+            f'https://www.tigeretf.com/ko/product/search/detail/index.do?ksdFund={isin}&otherPage=asset',
+            'TIGER 운용사 공개 구성종목'
+        ))
+
+    # 국내 상장 ETF 전반에 대해 ISIN 기반 공개 구성종목 페이지 보완
+    if isin:
+        sources.append((
+            f'https://www.funetf.co.kr/product/etf/view/{isin}',
+            'FunETF 공개 구성종목'
+        ))
+
+    # 종목코드 기반 보조 페이지
+    sources.append((
+        f'https://etf.zeroin.co.kr/etf/{code}',
+        'KG제로인 공개 구성종목'
+    ))
+
+    errors=[]
+    best=pd.DataFrame(columns=['holding_name','weight','source'])
+    best_date=''
+
+    for url,label in sources:
+        try:
+            r=requests.get(url,headers=headers,timeout=12)
+            r.raise_for_status()
+
+            df=_extract_holdings_from_html(r.text,label)
+            if not df.empty:
+                basis=_extract_basis_date_from_html(r.text)
+
+                # 더 많은 유효 구성종목을 주는 출처를 채택.
+                if len(df)>len(best):
+                    best=df.copy()
+                    best_date=basis
+
+                # 20개 이상 확보되면 상세 표시 용도로 충분하므로 종료
+                if len(best)>=20:
+                    break
+        except Exception as e:
+            errors.append(f'{label}: {e}')
+
+    return {
+        'holdings':best.to_dict('records') if not best.empty else [],
+        'basis_date':best_date,
+        'error':' | '.join(errors[-3:])
+    }
+
+
+def _weights_are_missing(holdings):
+    if holdings is None or holdings.empty or 'weight' not in holdings.columns:
+        return True
+    w=pd.to_numeric(holdings['weight'],errors='coerce').fillna(0.0)
+    return bool(len(w)>0 and float(w.max())<=0.0)
+
+
+def _prepare_holdings_for_detail(code,etf_name,local_holdings):
+    """
+    국내 ETF: 로컬 KRX 비중 그대로 사용
+    해외 ETF 등 KRX 비중이 모두 0: 공개 구성종목 데이터로 표시용 비중 보완
+    """
+    if local_holdings is None:
+        local_holdings=pd.DataFrame(columns=HOLDING_COLUMNS)
+
+    if not _weights_are_missing(local_holdings):
+        return local_holdings.copy(),'KRX 로컬 DB','',False
+
+    fallback=get_foreign_etf_weights(code,etf_name)
+    rows=fallback.get('holdings') or []
+
+    if rows:
+        ext=pd.DataFrame(rows)
+        ext['holding_code']=''
+        ext['quantity']=None
+        ext['as_of']=fallback.get('basis_date') or ''
+        ext['source']=ext.get('source','해외 ETF 비중 보완')
+        cols=[
+            'holding_code','holding_name','weight',
+            'quantity','as_of','source'
+        ]
+        for c in cols:
+            if c not in ext.columns:
+                ext[c]=None
+        ext['weight']=pd.to_numeric(ext['weight'],errors='coerce')
+        ext=ext.dropna(subset=['weight'])
+        ext=ext[ext['weight']>0]
+        ext=ext.sort_values('weight',ascending=False).reset_index(drop=True)
+
+        source=str(ext['source'].iloc[0]) if not ext.empty else '해외 ETF 공개 구성종목'
+        return ext[cols],source,fallback.get('basis_date') or '',True
+
+    return local_holdings.copy(),'KRX PDF · 해외종목 비중 미제공','',True
+
+def render_etf_detail(etf_code,key_prefix='detail'):
+    code=str(etf_code).zfill(6)
+    master_row=get_etf_master_local(code,db_token())
+    local_holdings=get_etf_holdings_local(code,db_token())
+
+    etf_name=str(
+        master_row.get('etf_name')
+        or st.session_state.get('selected_etf_name')
+        or code
     )
 
-    f.add_trace(go.Candlestick(
-        x=d["date"], open=d["open"], high=d["high"], low=d["low"], close=d["close"],
-        name="가격",
-        increasing_line_color="#D9364B", increasing_fillcolor="#D9364B",
-        decreasing_line_color="#2466C9", decreasing_fillcolor="#2466C9"
-    ), row=1, col=1)
-
-    ma_colors = {"MA5":"#00856F", "MA20":"#596B80", "MA60":"#B67A00", "MA120":"#8B55B1"}
-    for ma, color in ma_colors.items():
-        if ma in d.columns:
-            f.add_trace(go.Scatter(
-                x=d["date"], y=d[ma], name=ma, mode="lines",
-                line=dict(color=color, width=1.5), connectgaps=False
-            ), row=1, col=1)
-
-    volume_colors = ["#D9364B" if cl >= op else "#2466C9" for op, cl in zip(d["open"], d["close"])]
-    f.add_trace(go.Bar(
-        x=d["date"], y=d["volume"], name="거래량",
-        marker=dict(color=volume_colors, line=dict(width=0)), opacity=0.85,
-        hovertemplate="%{x|%Y-%m-%d}<br>거래량 %{y:,.0f}<extra></extra>"
-    ), row=2, col=1)
-
-    f.update_layout(
-        template="plotly_white",
-        title=dict(text=f"{n} | {c}", font=dict(size=16, color="#203D35"), x=0.01),
-        height=700,
-        autosize=True,
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        font=dict(color="#29483D", size=12),
-        margin=dict(l=8, r=12, t=48, b=8),
-        hovermode="x unified",
-        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#008878", font_color="#203D35"),
-        legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"),
-        bargap=0.08,
-        dragmode="pan"
+    holdings,holding_source,fallback_basis_date,used_fallback=_prepare_holdings_for_detail(
+        code,
+        etf_name,
+        local_holdings
     )
-    f.update_xaxes(
-        rangeslider_visible=False,
-        gridcolor="#E1EBE6", zeroline=False,
-        showspikes=True, spikecolor="#008878", spikethickness=1,
-        spikemode="across", spikesnap="cursor",
-        tickfont=dict(color="#536F64")
-    )
-    f.update_yaxes(
-        side="right", gridcolor="#E1EBE6", zeroline=False,
-        tickfont=dict(color="#536F64"), fixedrange=False,
-        row=1, col=1
-    )
-    f.update_yaxes(
-        side="right", gridcolor="#E1EBE6", zeroline=False,
-        tickfont=dict(color="#60766E"), title_text="거래량",
-        row=2, col=1
-    )
-    return f
 
+    st.markdown('---')
+    st.subheader(f'📈 {etf_name} · {code}')
+    st.caption('선택한 ETF의 가격차트와 로컬 DB 구성종목입니다.')
 
-@st.cache_data(ttl=60, show_spinner=False)
-def public_market_quote(symbol):
-    """공개 시세 endpoint에서 최근 두 종가를 읽어 지수/환율과 등락률을 계산한다."""
-    url=f"https://query1.finance.yahoo.com/v8/finance/chart/{requests.utils.quote(symbol, safe='')}"
-    r=requests.get(
-        url,
-        params={"range":"5d","interval":"1d","includePrePost":"false","events":"div,splits"},
-        headers={"User-Agent":"Mozilla/5.0"},
-        timeout=10
-    )
-    r.raise_for_status()
-    result=r.json().get("chart",{}).get("result") or []
-    if not result: raise RuntimeError("시세 응답 없음")
-    node=result[0]
-    closes=((node.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
-    closes=[float(x) for x in closes if x is not None]
-    if not closes: raise RuntimeError("종가 데이터 없음")
-    cur=closes[-1]; prev=closes[-2] if len(closes)>=2 else None
-    rate=((cur-prev)/prev*100) if prev not in (None,0) else None
-    return cur,rate
+    basis_date='-'
+    if fallback_basis_date:
+        basis_date=str(fallback_basis_date)
+    elif master_row.get('as_of'):
+        basis_date=str(master_row.get('as_of'))
+    elif not holdings.empty and 'as_of' in holdings.columns:
+        basis_date=str(holdings['as_of'].iloc[0])
 
-def market_panel_html(items):
-    valid_rates=[r for _,_,r in items if r is not None]
-    avg=sum(valid_rates)/len(valid_rates) if valid_rates else 0
-    mood="🟢 강세" if avg>=0.5 else ("🔴 약세" if avg<=-0.5 else "⚪ 중립")
-    rows=[]
-    for label,value,rate in items:
-        if value is None:
-            value_txt="-"; rate_txt="-"; color="#536F64"
-        else:
-            value_txt=f"{value:,.2f}"
-            rate_txt="-" if rate is None else f"{rate:+.2f}%"
-            color="#536F64" if rate is None else ("#D9364B" if rate>0 else ("#2466C9" if rate<0 else "#29483D"))
-        rows.append(
-            f'<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #E0EBE6;">'
-            f'<span style="color:#29483D;font-weight:700;">{label}</span>'
-            f'<span><b style="color:#203D35;">{value_txt}</b>&nbsp;&nbsp;<b style="color:{color};">{rate_txt}</b></span></div>'
+    local_count=len(local_holdings) if local_holdings is not None else 0
+    display_count=len(holdings)
+    count_text=f'{local_count:,}개' if local_count else f'{display_count:,}개'
+
+    info_cols=st.columns(4)
+    info_cols[0].metric('ETF 코드',code)
+    info_cols[1].metric('구성종목',count_text)
+    info_cols[2].metric('구성 기준일',basis_date)
+    info_cols[3].metric('추종지수',str(master_row.get('index_name') or '-')[:28])
+
+    chart_col,holding_col=st.columns([1.35,1],gap='large')
+
+    with chart_col:
+        st.markdown('#### 가격 차트')
+        period=st.radio(
+            '조회기간',
+            ['1개월','3개월','6개월','1년'],
+            index=2,
+            horizontal=True,
+            key=f'{key_prefix}_period_{code}'
         )
-    return (
-        '<div style="background:#FFFFFF;border:1px solid #008878;border-radius:6px;padding:9px 10px;margin:4px 0 8px 0;">'
-        '<div style="color:#007B69;font-size:15px;font-weight:900;margin-bottom:5px;">📊 오늘의 시장</div>'
-        + ''.join(rows) +
-        f'<div style="display:flex;justify-content:space-between;padding-top:7px;">'
-        f'<span style="color:#536F64;font-weight:700;">시장 분위기</span>'
-        f'<span style="color:#203D35;font-weight:900;">{mood}</span></div></div>'
+
+        try:
+            with st.spinner('선택 ETF 가격차트를 불러오는 중...'):
+                price_df=get_etf_price_history(code,period)
+
+            if price_df.empty:
+                st.info('해당 기간의 가격 데이터를 불러오지 못했습니다.')
+            else:
+                p=price_df[['날짜','종가']].dropna().sort_values('날짜').copy()
+                last=float(p['종가'].iloc[-1])
+                prev=float(p['종가'].iloc[-2]) if len(p)>=2 else last
+                change=((last/prev)-1)*100 if prev else 0.0
+
+                m1,m2=st.columns(2)
+                m1.metric('최근 종가',f'{last:,.0f}원',f'{change:+.2f}%')
+                m2.metric('조회 데이터',f'{len(p):,}일')
+
+                st.altair_chart(
+                    alt.Chart(p).mark_line(color='#008878').encode(
+                        x=alt.X('날짜:T', title='날짜'),
+                        y=alt.Y('종가:Q', title='종가 (원)', scale=alt.Scale(zero=False)),
+                        tooltip=[alt.Tooltip('날짜:T'), alt.Tooltip('종가:Q', format=',.0f')]
+                    ).properties(height=390, background='white').configure_axis(
+                        labelColor='#536F64', titleColor='#203D35', gridColor='#E1EBE6'
+                    ).configure_view(stroke='#CFDFD9').interactive(),
+                    use_container_width=True, theme=None
+                )
+
+                st.caption(
+                    f"{p['날짜'].min():%Y-%m-%d} ~ {p['날짜'].max():%Y-%m-%d} · "
+                    "차트만 선택 시 KRX에서 조회합니다."
+                )
+
+        except Exception as e:
+            st.warning(
+                '가격차트를 불러오지 못했습니다. 구성종목은 로컬 DB 데이터로 계속 확인할 수 있습니다. '
+                f'차트 오류: {e}'
+            )
+
+    with holding_col:
+        st.markdown('#### 주요 구성종목')
+
+        if used_fallback and not holdings.empty and pd.to_numeric(
+            holdings.get('weight',pd.Series(dtype=float)),
+            errors='coerce'
+        ).fillna(0).max()>0:
+            st.caption(f'비중 출처: {holding_source}')
+        elif used_fallback:
+            st.info(
+                '이 해외 ETF는 KRX PDF에서 구성종목명은 제공되지만 비중은 0으로 제공됩니다. '
+                '외부 공개 비중 보완 조회도 실패하여 0.00%를 실제 비중으로 표시하지 않습니다.'
+            )
+
+        if holdings.empty:
+            st.info('현재 로컬 DB에 이 ETF의 구성종목 데이터가 없습니다.')
+        else:
+            holdings=holdings.copy()
+            holdings['weight']=pd.to_numeric(
+                holdings.get('weight',0),
+                errors='coerce'
+            )
+
+            valid_weight=holdings['weight'].fillna(0)>0
+
+            if valid_weight.any():
+                # 실제 양수 비중이 확보된 경우에만 비중 차트/숫자를 표시
+                holdings=holdings.sort_values(
+                    'weight',
+                    ascending=False,
+                    na_position='last'
+                ).reset_index(drop=True)
+
+                top=holdings[holdings['weight']>0].head(10).copy()
+
+                chart_top=top[['holding_name','weight']].copy()
+                chart_top=chart_top[
+                    chart_top['holding_name'].fillna('').astype(str).str.len()>0
+                ]
+                chart_top=chart_top.sort_values('weight',ascending=False)
+
+                if not chart_top.empty:
+                    st.altair_chart(
+                        alt.Chart(chart_top).mark_bar(color='#008878').encode(
+                            x=alt.X('holding_name:N', sort='-y', title='구성종목'),
+                            y=alt.Y('weight:Q', title='편입비중 (%)'),
+                            tooltip=[alt.Tooltip('holding_name:N', title='구성종목'),
+                                     alt.Tooltip('weight:Q', title='비중 (%)', format='.2f')]
+                        ).properties(height=300, background='white').configure_axis(
+                            labelColor='#536F64', titleColor='#203D35', gridColor='#E1EBE6'
+                        ).configure_view(stroke='#CFDFD9'),
+                        use_container_width=True, theme=None
+                    )
+                    st.caption('상위 구성종목 편입비중(%) · 비중 높은 순')
+
+                holding_show=holdings.loc[
+                    holdings['weight']>0,
+                    ['holding_name','weight']
+                ].copy().rename(columns={
+                    'holding_name':'구성종목',
+                    'weight':'비중(%)'
+                })
+
+                st.dataframe(
+                    holding_show,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                    column_config={
+                        '구성종목':st.column_config.TextColumn(
+                            '구성종목',
+                            width='medium'
+                        ),
+                        '비중(%)':st.column_config.NumberColumn(
+                            '비중(%)',
+                            format='%.2f%%',
+                            width='small'
+                        )
+                    }
+                )
+
+            else:
+                # KRX 해외 ETF PDF의 0.0은 실제 0%가 아니므로 비중 숫자를 숨긴다.
+                name_only=holdings[['holding_name']].copy()
+                name_only=name_only[
+                    name_only['holding_name'].fillna('').astype(str).str.len()>0
+                ]
+                name_only=name_only.rename(columns={'holding_name':'구성종목'})
+
+                st.dataframe(
+                    name_only,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                    column_config={
+                        '구성종목':st.column_config.TextColumn(
+                            '구성종목',
+                            width='large'
+                        )
+                    }
+                )
+                st.caption('KRX 원자료에서 해외 구성종목 비중이 제공되지 않아 종목명만 표시합니다.')
+
+            # 원래 KRX 로컬 구성종목 전체도 확인 가능
+            with st.expander('전체 구성종목 상세정보'):
+                source_df=local_holdings.copy() if not local_holdings.empty else holdings.copy()
+
+                detail_cols=[
+                    c for c in [
+                        'holding_name','holding_code','weight','quantity','as_of'
+                    ] if c in source_df.columns
+                ]
+                detail_show=source_df[detail_cols].copy().rename(columns={
+                    'holding_name':'구성종목',
+                    'holding_code':'종목코드',
+                    'weight':'비중(%)',
+                    'quantity':'수량',
+                    'as_of':'기준일'
+                })
+
+                # 전부 0인 해외 ETF는 오해 방지를 위해 비중 칼럼 제거
+                if (
+                    '비중(%)' in detail_show.columns
+                    and not detail_show.empty
+                    and pd.to_numeric(
+                        detail_show['비중(%)'],
+                        errors='coerce'
+                    ).fillna(0).max()<=0
+                ):
+                    detail_show=detail_show.drop(columns=['비중(%)'])
+
+                st.dataframe(
+                    detail_show,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        '비중(%)':st.column_config.NumberColumn(format='%.2f%%')
+                    } if '비중(%)' in detail_show.columns else None
+                )
+
+
+# 기존 CSV가 있다면 네트워크 접속 없이 SQLite로 1회 변환
+try:
+    _migrated=migrate_existing_csv_to_db()
+except Exception:
+    _migrated=False
+
+_status={}
+try:
+    if STATUS_FILE.exists():
+        _status=json.loads(STATUS_FILE.read_text(encoding='utf-8'))
+except Exception:
+    _status={}
+
+_theme_info={'rebuilt':False,'mapped_etfs':0,'rows':0,'generated_at':''}
+_theme_error=''
+if db_available():
+    try:
+        _theme_info=ensure_theme_map()
+    except Exception as _e:
+        _theme_error=str(_e)
+
+_token=db_token()
+master=load_master_db(_token)
+_stats=local_db_stats()
+_theme_stats=theme_map_stats()
+
+
+# =========================================================
+# LOCAL DB STATUS / MANUAL UPDATE
+# =========================================================
+
+
+st.subheader('💾 로컬 ETF 데이터베이스')
+
+with st.expander('🧪 배포환경 진단', expanded=False):
+    import sys as _sys
+    st.write('Python:', _sys.version.split()[0])
+    st.write('실행 파일:', _sys.executable)
+    try:
+        import pykrx as _pk
+        st.success(f"pykrx 설치됨 · {getattr(_pk,'__version__',getattr(_pk,'version','버전 미확인'))}")
+    except Exception as _e:
+        st.error(f"pykrx 미설치/로드 실패 · {_e}")
+
+
+_s1,_s2,_s3,_s4=st.columns(4)
+_s1.metric('저장 ETF',f"{_stats['etfs']:,}")
+_s2.metric('구성종목',f"{_stats['holdings']:,}")
+_s3.metric('기준일',_status.get('as_of','-'))
+_s4.metric('DB 방식','SQLite')
+
+if _migrated:
+    st.success('기존 CSV 데이터를 로컬 SQLite DB로 자동 변환했습니다. KRX 재조회는 하지 않았습니다.')
+
+if db_available():
+    st.success('검색 모드: 로컬 DB 사용 중 · 일반 검색 시 KRX에 접속하지 않습니다.')
+
+    if _theme_error:
+        st.warning(f'자동 테마 매핑 오류: {_theme_error}')
+    else:
+        st.caption(
+            f"🧠 자동 테마 매핑 · ETF {_theme_stats.get('mapped_etfs',0):,}개 · "
+            f"매핑 {_theme_stats.get('rows',0):,}건 · "
+            f"생성 {_theme_stats.get('generated_at','-') or '-'}"
+        )
+        if _theme_info.get('rebuilt'):
+            st.success('ETF명·추종지수·구성종목을 기준으로 테마 매핑을 자동 생성했습니다.')
+
+        if st.button('🧠 테마 매핑 다시 생성',key='rebuild_theme_map'):
+            with st.spinner('로컬 DB에서 테마를 다시 분류하는 중...'):
+                _new_theme=ensure_theme_map(force=True)
+                st.cache_data.clear()
+            st.success(
+                f"테마 매핑 완료 · ETF {_new_theme.get('mapped_etfs',0):,}개 · "
+                f"매핑 {_new_theme.get('rows',0):,}건"
+            )
+            st.rerun()
+else:
+    st.info('아직 로컬 DB가 없습니다. 아래 버튼을 한 번 실행해 최초 DB를 생성하세요.')
+
+_krx_ready=bool(_secret_or_env('KRX_ID') and _secret_or_env('KRX_PW'))
+if _krx_ready:
+    st.caption('🔐 KRX 로그인 정보: Secrets 자동 사용 · pykrx는 requirements.txt에서 배포 시 설치')
+else:
+    st.warning('KRX 업데이트용 Secrets가 없습니다. .streamlit/secrets.toml에 KRX_ID와 KRX_PW를 저장해 주세요.')
+
+with st.expander('🔄 KRX에서 로컬 DB 새로고침',expanded=not db_available()):
+    st.caption(
+        '이 버튼을 누를 때만 KRX 전체 데이터를 조회합니다. '
+        '저장 완료 후 종목검색·테크트리·ETF 조회는 모두 로컬 DB에서 실행됩니다.'
     )
 
-st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
+    if st.button('KRX 전체 데이터로 로컬 DB 업데이트',type='primary',use_container_width=True):
+        if not _krx_ready:
+            st.error('secrets.toml의 KRX_ID / KRX_PW를 먼저 확인해 주세요.')
+            st.stop()
 
-if not KEY or not SEC:
-    st.error("KIS_APP_KEY / KIS_APP_SECRET이 설정되지 않았습니다.")
-    st.code('$env:KIS_APP_KEY="본인의_APP_KEY"\n$env:KIS_APP_SECRET="본인의_APP_SECRET"\nstreamlit run app.py',language="powershell")
-    st.warning("키 값은 채팅에 보내지 마세요.")
-    st.stop()
+        bar=st.progress(0,text='KRX ETF 데이터를 로컬 DB용으로 수집하는 중...')
 
-with st.sidebar:
+        def _progress(i,total,ticker,failed):
+            bar.progress(
+                min(i/max(total,1),1.0),
+                text=f'{i:,}/{total:,} · {ticker} · 실패 {failed:,}건'
+            )
+
+        try:
+            _m,_h,_status=collect_krx_etf_snapshot(progress=_progress)
+            save_local_db(_m,_h)
+            st.cache_data.clear()
+
+            bar.progress(1.0,text='로컬 DB 저장 완료')
+            st.success(
+                f"기준일 {_status['as_of']} · ETF {_status['success_etfs']:,}개 · "
+                f"구성종목 {_status['holding_rows']:,}건을 etf_finder.db에 저장했습니다."
+            )
+            st.rerun()
+        except Exception as e:
+            st.error(f'업데이트 실패: {e}')
+
+st.divider()
+
+
+# =========================================================
+# TREE SEARCH - LOCAL DB ONLY
+# =========================================================
+
+left,right=st.columns([0.82,1.45],gap='large')
+
+with left:
+    st.subheader('🌳 ETF 테크트리')
+    region=st.radio(
+        'STEP 1 · 투자대상',
+        list(TREE.keys()),
+        horizontal=True,
+        key='tree_region'
+    )
+    asset=st.selectbox(
+        'STEP 2 · 자산군',
+        list(TREE[region].keys()),
+        key='tree_asset'
+    )
+    sector=st.selectbox(
+        'STEP 3 · 산업/테마',
+        list(TREE[region][asset].keys()),
+        key='tree_sector'
+    )
+    subsector=st.selectbox(
+        'STEP 4 · 세부분야',
+        TREE[region][asset][sector],
+        key='tree_subsector'
+    )
+
     st.markdown(
-        """
-        <div style="margin:0 0 8px 0; padding:0;">
-            <div style="color:#007B69; font-size:18px; font-weight:900; line-height:1.15;">
-                HanaV Trading
-            </div>
-            <div style="color:#60766E; font-size:11px; font-weight:600; letter-spacing:0.3px; margin-top:2px;">
-                Designed &amp; Built by K.H. Ahn
-            </div>
-        </div>
-        """,
+        f'<div class="step">{region} → {asset} → {sector} → {subsector}</div>',
         unsafe_allow_html=True
     )
-    paper=False
-    market_symbols=[
-        ("KOSPI","^KS11"),("KOSDAQ","^KQ11"),("NASDAQ","^IXIC"),
-        ("DOW","^DJI"),("USD/KRW","KRW=X"),
-    ]
-    market_items=[]
-    for market_label, market_symbol in market_symbols:
-        try: mv,mr=public_market_quote(market_symbol)
-        except Exception: mv,mr=None,None
-        market_items.append((market_label,mv,mr))
-    st.markdown(market_panel_html(market_items), unsafe_allow_html=True)
-    if st.button("🔄 오늘의 시장 새로고침", use_container_width=True, key="refresh_today_market"):
-        public_market_quote.clear()
-        st.rerun()
-    st.caption("지수·환율은 최근 확인 가능한 시세 기준 · 약 1분 캐시")
 
-    # 종목마스터는 실적 TOP과 전체 종목 검색이 함께 사용한다.
-    try:
-        master = load_stock_master()
-    except Exception as e:
-        st.error(f"종목 마스터 다운로드 오류: {e}")
-        master = pd.DataFrame([{
-            "code":"005930","name":"삼성전자","market":"KOSPI","std_code":"",
-            "roe":float("nan"),"prev_volume":float("nan"),"master_cap":float("nan")
-        }])
-
-    # 시총 상위 40개를 1차 후보로 삼고, 함수 내부에서 거래대금 상위 20개로 다시 축소한다.
-    top_candidates = master.copy()
-    if "master_cap" in top_candidates.columns:
-        top_candidates["master_cap"] = pd.to_numeric(top_candidates["master_cap"], errors="coerce")
-        top_candidates = top_candidates.dropna(subset=["master_cap"]).sort_values("master_cap", ascending=False).head(40)
-    else:
-        top_candidates = top_candidates.head(40)
-    candidate_records = tuple(
-        (str(r.code).zfill(6), str(r.name), str(r.market),
-         float(r.master_cap) if hasattr(r,"master_cap") and pd.notna(r.master_cap) else 0.0)
-        for r in top_candidates.itertuples()
+    tree_search_clicked=st.button(
+        '🔎 선택 조건으로 ETF 검색',
+        type='primary',
+        use_container_width=True,
+        key='tree_search_button'
     )
 
-    with st.spinner("실적개선 TOP 분석 중... 최초 계산은 잠시 걸릴 수 있습니다."):
-        try:
-            earnings_top = auto_earnings_top5(candidate_records)
-        except Exception:
-            earnings_top = []
+    current_tree=(region,asset,sector,subsector)
 
-    st.markdown(earnings_top_panel_html(earnings_top), unsafe_allow_html=True)
-    if st.button("🔄 실적 TOP 새로고침", use_container_width=True, key="refresh_earnings_top"):
-        auto_earnings_top5.clear()
-        naver_fundamental_2025_2028.clear()
-        st.rerun()
+    if tree_search_clicked:
+        st.session_state['tree_search_params']=current_tree
+        st.session_state['tree_search_requested']=True
 
-    st.divider()
-    st.subheader("전체 종목 검색")
-    search_market = st.selectbox("검색 시장", ["전체", "KOSPI", "KOSDAQ"], key="stock_search_market")
-    q=st.text_input("종목명 또는 6자리 코드","삼성전자").strip()
-
-    search_df = master
-    if search_market != "전체":
-        search_df = search_df[search_df["market"] == search_market]
-
-    if q:
-        q_lower = q.lower()
-        mask = (
-            search_df["code"].astype(str).str.contains(q, regex=False) |
-            search_df["name"].astype(str).str.lower().str.contains(q_lower, regex=False)
-        )
-        hits_df = search_df[mask].copy()
-        # 정확한 코드/종목명을 먼저 표시
-        hits_df["_exact"] = ((hits_df["code"] == q) | (hits_df["name"].str.lower() == q_lower)).astype(int)
-        hits_df = hits_df.sort_values(["_exact", "name"], ascending=[False, True]).head(100)
+    saved_tree=st.session_state.get('tree_search_params')
+    if saved_tree and saved_tree!=current_tree:
+        st.caption('선택 조건이 변경되었습니다. 새 조건으로 보려면 검색 버튼을 다시 눌러주세요.')
     else:
-        hits_df = search_df.head(100).copy()
+        st.caption('검색은 저장된 로컬 DB만 사용하며 KRX에 다시 접속하지 않습니다.')
 
-    if hits_df.empty:
-        st.warning("검색 결과가 없습니다.")
-        fallback = master[master["code"] == "005930"]
-        hits_df = fallback if not fallback.empty else master.head(1)
+with right:
+    st.subheader('🔎 조건에 맞는 ETF')
 
-    options = [f"{r.code} | {r.name} | {r.market}" for r in hits_df.itertuples()]
-    pick=st.selectbox("검색 결과", options)
-    selected = pick.split(" | ")
-    code, name = selected[0].strip(), selected[1].strip()
-    st.caption(f"전체 종목 {len(master):,}개 로드 · 검색 결과 {len(hits_df):,}개")
-    st.divider()
-    st.subheader("조건검색 PRO")
-    market=st.selectbox("시장",["전체","KOSPI","KOSDAQ"])
-    mcode={"전체":"0000","KOSPI":"0001","KOSDAQ":"1001"}[market]
-    a,b=st.columns(2)
-    with a:
-        r1=st.number_input("최소 등락률 %",value=0.0,step=.5)
-        lo=st.number_input("최저 가격",value=0,step=100)
-    with b:
-        r2=st.number_input("최대 등락률 %",value=30.0,step=.5)
-        hi=st.number_input("최고 가격",value=1000000,step=1000)
-    vol=st.number_input("최소 거래량",value=0,step=10000)
+    if master.empty:
+        st.info('로컬 ETF DB가 비어 있습니다. 최초 1회 DB 업데이트가 필요합니다.')
 
-    st.markdown("##### PRO 필터")
-    turnover_on=st.checkbox("거래대금",False)
-    turnover_min=st.number_input("최소 거래대금 (억원)",0.0,1000000.0,100.0,50.0,disabled=not turnover_on)
-    cap_on=st.checkbox("시가총액",False)
-    c1,c2=st.columns(2)
-    with c1: cap_min=st.number_input("시총 최소(억원)",0.0,100000000.0,0.0,1000.0,disabled=not cap_on)
-    with c2: cap_max=st.number_input("시총 최대(억원)",0.0,100000000.0,100000000.0,1000.0,disabled=not cap_on)
-    surge_on=st.checkbox("거래량 급증",False)
-    surge_min=st.number_input("전일 거래량 대비 최소 %",0.0,10000.0,150.0,10.0,disabled=not surge_on,
-                              help="현재 누적거래량 ÷ 종목 마스터의 전일거래량 × 100")
-    high_on=st.checkbox("250일 신고가 근접",False)
-    high_near=st.number_input("최고가와 최대 거리 %",0.0,100.0,5.0,0.5,disabled=not high_on,
-                              help="예: 5% = 현재가가 250일 최고가에서 5% 이내")
-    ma_condition=st.selectbox("이평선 조건",["사용 안 함","정배열 (5>20>60)","역배열 (5<20<60)","5/20 골든크로스","5/20 데드크로스","20/60 골든크로스"])
-    per_on=st.checkbox("PER",False)
-    p1,p2=st.columns(2)
-    with p1: per_min=st.number_input("PER 최소",-1000.0,10000.0,0.0,1.0,disabled=not per_on)
-    with p2: per_max=st.number_input("PER 최대",-1000.0,10000.0,30.0,1.0,disabled=not per_on)
-    roe_on=st.checkbox("ROE",False)
-    o1,o2=st.columns(2)
-    with o1: roe_min=st.number_input("ROE 최소 %",-1000.0,1000.0,0.0,1.0,disabled=not roe_on)
-    with o2: roe_max=st.number_input("ROE 최대 %",-1000.0,1000.0,100.0,1.0,disabled=not roe_on)
-    earnings_improve_on=st.checkbox(
-        "📈 실적개선 종목만", False,
-        help="WiseReport 2025A~2028E의 영업이익·EPS·PER·ROE 흐름을 종합해 '실적개선'으로 판정된 종목만 남깁니다. 컨센서스가 없는 종목은 제외됩니다."
-    )
-    candidate_count=st.slider("1차 후보 수",10,50,40,5,help="KIS 등락률 순위에서 먼저 가져올 후보 수")
-    result_count=st.slider("최종 결과 수",5,30,20,5)
-    run_scan=st.button("조건검색 PRO 실행",type="primary",use_container_width=True)
+    elif _theme_error:
+        st.warning(f'테마 매핑을 사용할 수 없습니다: {_theme_error}')
 
-    st.divider()
-    if st.button("🔒 로그아웃",use_container_width=True,key="_hanav_logout_button"):
-        _logout_hanav()
-        st.rerun()
+    elif not st.session_state.get('tree_search_requested'):
+        st.info('왼쪽에서 조건을 선택한 뒤 **선택 조건으로 ETF 검색** 버튼을 눌러주세요.')
 
-try:client(KEY,SEC,paper)
-except Exception as e:
-    st.error(f"KIS 인증 실패: {e}");st.stop()
-
-if run_scan:
-    try:
-        settings={
-            'market':market,'turnover_on':turnover_on,'turnover_min':turnover_min,
-            'cap_on':cap_on,'cap_min':cap_min,'cap_max':cap_max,
-            'surge_on':surge_on,'surge_min':surge_min,'high_on':high_on,'high_near':high_near,
-            'ma_condition':ma_condition,'per_on':per_on,'per_min':per_min,'per_max':per_max,
-            'roe_on':roe_on,'roe_min':roe_min,'roe_max':roe_max,
-            'earnings_improve_on':earnings_improve_on,'result_count':result_count
-        }
-        spinner_text = "조건검색 PRO 분석 중 · PER/ROE/시총/기술조건을 확인하고 있습니다..."
-        if earnings_improve_on:
-            spinner_text = "조건검색 PRO 분석 중 · 1차 필터 통과 종목의 2025~2028 실적 컨센서스까지 확인하고 있습니다..."
-        with st.spinner(spinner_text):
-            base=scan(KEY,SEC,paper,mcode,candidate_count,lo,hi,vol,r1,r2)
-            st.session_state.rows=pro_filter_candidates(KEY,SEC,paper,base,master,settings)
-        st.session_state.pop("matches_table",None)
-        st.session_state.pro_candidate_count=len(base)
-    except Exception as e:
-        st.error(f"조건검색 PRO 오류: {e}")
-rows=st.session_state.get("rows",[])
-rd=pd.DataFrame(rows) if rows else pd.DataFrame()
-
-# 조건검색 결과가 있을 때만 접을 수 있는 전체폭 결과표를 표시합니다.
-# 검색 전에는 MATCHES/안내 영역을 만들지 않아 종목 상세와 차트가 화면 전체 폭을 사용합니다.
-if not rd.empty:
-    with st.expander(f"🔎 조건검색 PRO 결과 · {len(rd)}종목", expanded=False):
-        cc=next((x for x in ["_code","mksc_shrn_iscd","stck_shrn_iscd"] if x in rd),None)
-        nc=next((x for x in ["hts_kor_isnm","prdt_name"] if x in rd),None)
-        colmap={cc:"코드",nc:"종목명","stck_prpr":"현재가","prdy_ctrt":"등락률","acml_vol":"거래량",
-                "_turnover_100m":"거래대금(억)","_cap_100m":"시총(억)","_per":"PER","_roe":"ROE",
-                "_surge_pct":"거래량비%","_near_high_pct":"신고가거리%","_earnings_signal":"실적판정"}
-        cols=[x for x in colmap if x and x in rd.columns]
-        v=rd[cols].copy().rename(columns={x:colmap[x] for x in cols})
-        for x in ["거래대금(억)","시총(억)","PER","ROE","거래량비%","신고가거리%"]:
-            if x in v.columns: v[x]=pd.to_numeric(v[x],errors="coerce").round(2)
-        # 표의 행을 클릭하면 해당 종목을 오른쪽 차트에 즉시 반영합니다.
-        event = st.dataframe(
-            v, hide_index=True, use_container_width=True, height=520,
-            on_select="rerun", selection_mode="single-row", key="matches_table"
-        )
-        if cc and nc:
-            selected_rows = []
-            try:
-                selected_rows = event.selection.rows
-            except Exception:
-                pass
-            if selected_rows:
-                idx = int(selected_rows[0])
-                if 0 <= idx < len(rd):
-                    chosen = rd.iloc[idx]
-                    code = str(chosen[cc]).zfill(6)
-                    name = str(chosen[nc])
-            else:
-                # 클릭 전에는 첫 번째 검색 결과를 기본 차트 종목으로 사용합니다.
-                chosen = rd.iloc[0]
-                code = str(chosen[cc]).zfill(6)
-                name = str(chosen[nc])
-        st.caption(f"1차 후보 {st.session_state.get('pro_candidate_count', len(rd))}개 → 최종 {len(rd)}개 · 행 클릭 시 오른쪽 차트 변경")
-
-try:qv=price(KEY,SEC,paper,code)
-except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
-api_name=qv.get("hts_kor_isnm") or qv.get("prdt_name") or name
-cur,rate,volume,value,cap=[num(qv.get(x)) for x in ["stck_prpr","prdy_ctrt","acml_vol","acml_tr_pbmn","hts_avls"]]
-selected_signal=""
-selected_signal_reason=""
-try:
-    _selected_fund=naver_fundamental_2025_2028(code)
-    selected_signal,_,selected_signal_reason=earnings_momentum(_selected_fund)
-except Exception:
-    _selected_fund=pd.DataFrame()
-signal_html=f" &nbsp; <span style='font-size:14px'>{selected_signal}</span>" if selected_signal else ""
-st.markdown(f'<div class="head">{api_name} | {code}{signal_html}<span style="float:right">{cur:,.0f} &nbsp; {rate:+.2f}%</span></div>',unsafe_allow_html=True)
-cs=st.columns(5)
-vals=[("현재가",f"{cur:,.0f}"),("등락률",f"{rate:+.2f}%"),("거래량",f"{volume:,.0f}"),
-      ("거래대금",f"{value/1e8:,.1f}억"),("시가총액",f"{cap:,.0f}억" if cap else "-")]
-for c,(l,v) in zip(cs,vals):
-    with c:st.markdown(f'<div class="box"><div class="lab">{l}</div><div class="val">{v}</div></div>',unsafe_allow_html=True)
-
-# ===== 기업실적 상세보기 =====
-selected_market = "KOSPI"
-try:
-    mr = master[master["code"].astype(str) == str(code).zfill(6)]
-    if not mr.empty: selected_market = str(mr.iloc[0].get("market","KOSPI"))
-except Exception:
-    pass
-
-with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS / PER / ROE", expanded=False):
-    st.caption("네이버 증권 종목분석 Financial Summary 기준 · 2025A 확정실적 + 2026E~2028E 컨센서스입니다.")
-    try:
-        f3 = _selected_fund if '_selected_fund' in locals() and not _selected_fund.empty else naver_fundamental_2025_2028(code)
-        if f3.empty:
-            st.info("이 종목은 2025~2028 재무데이터를 불러오지 못했습니다. 신규상장·ETF·일부 종목은 데이터가 제한될 수 있습니다.")
+    else:
+        params=st.session_state.get('tree_search_params')
+        if not params:
+            st.info('검색 조건을 선택해 주세요.')
         else:
-            view=pd.DataFrame({
-                "구분":["영업이익","EPS","PER","ROE"],
-                **{f'{int(r["연도"])}{r.get("구분","")}':[("-" if pd.isna(r["영업이익"]) else f'{r["영업이익"]:,.0f}'), ("-" if pd.isna(r["EPS"]) else f'{r["EPS"]:,.0f}원'), fmt_metric(r["PER"],"배"), fmt_metric(r["ROE"],"%")] for _,r in f3.iterrows()}
-            })
-            st.dataframe(view, hide_index=True, use_container_width=True)
+            s_region,s_asset,s_sector,s_subsector=params
 
-            mom_label,mom_score,mom_reason=earnings_momentum(f3)
-            st.markdown(f"**실적 모멘텀 : {mom_label}** &nbsp; · &nbsp; 점수 `{mom_score:+d}`")
-            st.caption(f"판정 근거 · {mom_reason}")
-            st.markdown(f"**영업이익 추세 : {profit_trend_label(f3)}**")
-            op=f3.dropna(subset=["영업이익"]).copy()
-            if not op.empty:
-                pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"], text=[f"{x:,.0f}" for x in op["영업이익"]], textposition="outside"))
-                pf.update_layout(template="plotly_white", title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF", font=dict(color="#29483D"), xaxis_title="연도", yaxis_title="영업이익(억원)", showlegend=False)
-                pf.update_xaxes(gridcolor="#E1EBE6")
-                pf.update_yaxes(gridcolor="#E1EBE6")
-                st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
-            st.caption("※ 출처: 네이버 증권 종목분석에 연결된 WiseReport Financial Summary. 2026E~2028E는 컨센서스이며 수시로 변경될 수 있습니다. 공개 HTML 구조 변경 시 조회 기능 수정이 필요할 수 있습니다.")
-    except Exception as e:
-        st.warning(f"기업실적 조회 실패: {e}")
+            st.caption(
+                f'검색조건: {s_region} → {s_asset} → {s_sector} → {s_subsector}'
+            )
 
-st.write("")
-st.markdown("""
-<style>
-/* 차트 주기 라벨/선택값/옵션 글자 밝게 */
-div[data-testid="stSelectbox"] label,
-div[data-testid="stSelectbox"] label p {
-    color:#203D35 !important;
-    opacity:1 !important;
-    font-weight:800 !important;
-}
-div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-    color:#203D35 !important;
-}
-div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
-    color:#203D35 !important;
-    opacity:1 !important;
-}
-</style>
-""",unsafe_allow_html=True)
+            with st.spinner('로컬 테마 DB 검색 중...'):
+                q=search_theme_db(
+                    s_region,s_asset,s_sector,s_subsector
+                )
 
-pername=st.selectbox("차트 주기",["일봉","주봉","월봉","15분봉","30분봉"], index=0)
-per={"일봉":"D","주봉":"W","월봉":"M"}.get(pername,pername)
+            if q.empty:
+                st.info(
+                    '현재 자동 매핑 기준으로 해당 조건에 맞는 ETF를 찾지 못했습니다. '
+                    'ETF명·추종지수·구성종목 정보가 부족한 상품은 누락될 수 있습니다.'
+                )
+            else:
+                show=q.rename(columns={
+                    'etf_name':'ETF명',
+                    'etf_code':'ETF코드',
+                    'issuer':'운용사',
+                    'aum':'순자산',
+                    'turnover':'거래대금',
+                    'fee':'총보수',
+                    'index_name':'추종지수',
+                    'as_of':'구성 기준일',
+                    'theme_score':'매핑점수',
+                    'match_evidence':'매핑 근거'
+                })
 
-minute_days=5
-if pername in ["15분봉","30분봉"]:
-    minute_days=st.selectbox(
-        "조회기간",
-        [1,3,5,10,20],
-        index=2,
-        format_func=lambda x:f"{x}일",
-        key=f"minute_days_{code}_{pername}"
+                st.success(
+                    f'{len(show):,}개 ETF를 찾았습니다. '
+                    'ETF명·추종지수·구성종목 기반 자동 테마 매핑 결과입니다.'
+                )
+
+                st.caption('👇 ETF 행을 클릭하면 아래에 가격차트와 구성종목이 표시됩니다.')
+
+                theme_event=st.dataframe(
+                    show,
+                    use_container_width=True,
+                    hide_index=True,
+                    on_select='rerun',
+                    selection_mode='single-row',
+                    key='theme_search_results_table',
+                    column_config={
+                        '매핑점수':st.column_config.NumberColumn(format='%.2f')
+                    }
+                )
+
+                try:
+                    selected_rows=list(theme_event.selection.rows)
+                except Exception:
+                    selected_rows=[]
+
+                if selected_rows:
+                    _idx=int(selected_rows[0])
+                    if 0<=_idx<len(show):
+                        _row=show.iloc[_idx]
+                        _set_selected_etf(
+                            _row.get('ETF코드',''),
+                            _row.get('ETF명',''),
+                            'theme'
+                        )
+
+                st.caption(
+                    '매핑점수는 ETF명 신호를 가장 크게, 추종지수와 구성종목/편입비중을 '
+                    '보조적으로 반영한 규칙 기반 분류 점수입니다. 투자성과 점수가 아닙니다.'
+                )
+
+                if (
+                    st.session_state.get('selected_etf_code')
+                    and st.session_state.get('selected_etf_source')=='theme'
+                ):
+                    render_etf_detail(
+                        st.session_state['selected_etf_code'],
+                        key_prefix='theme_detail'
+                    )
+
+st.divider()
+
+
+# =========================================================
+# REVERSE STOCK SEARCH - LOCAL DB ONLY
+# =========================================================
+
+a,b=st.columns([1,1.25],gap='large')
+
+with a:
+    st.subheader('🔍 종목으로 ETF 찾기')
+    st.caption('로컬 DB에서만 검색하므로 전체 ETF를 다시 조회하지 않습니다.')
+
+    names=st.text_input(
+        '종목명 / 종목코드',
+        placeholder='예: SK하이닉스 또는 000660 · 복수검색: 삼성전자, SK하이닉스'
     )
 
-d=pd.DataFrame()
-try:
-    if pername in ["15분봉","30분봉"]:
-        raw_chart=minute_chart_raw(KEY,SEC,paper,code,minute_days)
-        d=minute_chartdf(raw_chart,15 if pername=="15분봉" else 30)
-    else:
-        raw_chart=chart(KEY,SEC,paper,code,per)
-        d=chartdf(raw_chart)
-    if d.empty:
-        st.warning("차트 데이터가 없습니다. 15분/30분봉은 KIS 분봉 원본 제공 범위 내에서 표시됩니다." if pername in ["15분봉","30분봉"] else "차트 데이터가 없습니다. 현재가는 조회되지만 KIS 차트 데이터가 비어 있습니다.")
-    else:
-        if pername in ["15분봉","30분봉"]:
-            actual_days=d["date"].dt.strftime("%Y%m%d").nunique() if "date" in d else 0
-            st.caption(f"KIS 일별 분봉 · 최근 {actual_days}거래일 표시 · {pername}")
-        chart_fig = fig(d, api_name, code)
-        st.plotly_chart(
-            chart_fig,
-            use_container_width=True,
-            theme=None,
-            key=f"price_volume_{code}_{pername}_{minute_days}",
-            config={
-                "displaylogo":False,
-                "scrollZoom":True,
-                "responsive":True,
-                "modeBarButtonsToRemove":["lasso2d","select2d"]
-            }
+    c1,c2=st.columns(2)
+    with c1:
+        min_weight=st.number_input(
+            '최소 합산 편입비중 (%)',
+            min_value=0.0,max_value=100.0,value=0.0,step=0.5
         )
-except Exception as e:st.error(f"차트 조회 오류: {e}")
+    with c2:
+        match_mode=st.selectbox('복수 종목 조건',['모두 포함','하나 이상 포함'])
+
+    if st.button('ETF 역검색',type='primary',use_container_width=True):
+        if not db_available():
+            st.warning('로컬 ETF DB가 없습니다. 최초 1회 DB 업데이트가 필요합니다.')
+            st.session_state.pop('reverse_search_result',None)
+        else:
+            with st.spinner('로컬 DB 검색 중...'):
+                result=reverse_search_etf_db(
+                    names,
+                    min_weight=min_weight,
+                    require_all=(match_mode=='모두 포함')
+                )
+            st.session_state['reverse_search_result']=result
+
+    result=st.session_state.get('reverse_search_result')
+
+    if isinstance(result,pd.DataFrame):
+        if result.empty:
+            st.info('조건에 맞는 ETF를 찾지 못했습니다. 종목명/코드 또는 최소 편입비중을 확인해 주세요.')
+        else:
+            show=result.rename(columns={
+                'etf_name':'ETF명',
+                'etf_code':'ETF코드',
+                'issuer':'운용사',
+                'match_weight':'합산 편입비중(%)',
+                'matched_stocks':'일치 종목',
+                'match_count':'일치 종목수',
+                'aum':'순자산',
+                'turnover':'거래대금',
+                'fee':'총보수',
+                'index_name':'추종지수',
+                'as_of':'구성 기준일',
+                'source':'출처'
+            })
+
+            st.success(f'{len(show):,}개 ETF를 찾았습니다. 로컬 DB 검색 결과입니다.')
+            st.caption('👇 ETF 행을 클릭하면 아래에 가격차트와 구성종목이 표시됩니다.')
+
+            reverse_event=st.dataframe(
+                show,
+                use_container_width=True,
+                hide_index=True,
+                on_select='rerun',
+                selection_mode='single-row',
+                key='reverse_search_results_table',
+                column_config={
+                    '합산 편입비중(%)':st.column_config.NumberColumn(format='%.2f%%')
+                }
+            )
+
+            try:
+                reverse_rows=list(reverse_event.selection.rows)
+            except Exception:
+                reverse_rows=[]
+
+            if reverse_rows:
+                _idx=int(reverse_rows[0])
+                if 0<=_idx<len(show):
+                    _row=show.iloc[_idx]
+                    _set_selected_etf(
+                        _row.get('ETF코드',''),
+                        _row.get('ETF명',''),
+                        'reverse'
+                    )
+
+            if (
+                st.session_state.get('selected_etf_code')
+                and st.session_state.get('selected_etf_source')=='reverse'
+            ):
+                render_etf_detail(
+                    st.session_state['selected_etf_code'],
+                    key_prefix='reverse_detail'
+                )
+
+with b:
+    st.subheader('⚡ 검색 구조')
+    st.markdown('''
+- **최초 1회 / 수동 업데이트:** KRX → 로컬 DB 저장
+- **종목 역검색:** 로컬 SQLite DB만 조회
+- **테크트리 필터:** 로컬 ETF Master만 조회
+- **Streamlit 재실행:** 저장된 DB를 다시 사용
+- **검색할 때마다 1,000개 이상 ETF를 재수집하지 않음**\n- **검색 결과 행 클릭:** 가격차트 + 구성종목 표시
+''')
+    st.caption(f'로컬 DB: {DB_FILE.name} · 앱 실행 시각: {datetime.now():%Y-%m-%d %H:%M:%S}')
+
+st.divider()
 
 
-st.markdown("---")
-# ===== 투자자 수급 =====
-st.markdown("""
-<style>
-/* 투자자 수급 숫자 시인성 */
-div[data-testid="stMetricValue"] {
-    color: #203D35 !important;
-    opacity: 1 !important;
-}
-div[data-testid="stMetricDelta"] {
-    color: #536F64 !important;
-    opacity: 1 !important;
-}
+# =========================================================
+# LOCAL DB VIEW
+# =========================================================
 
-/* 수급 새로고침 버튼: 흰 배경 제거 */
-div[data-testid="stButton"] button[kind="secondary"] {
-    background: transparent !important;
-    color: #29483D !important;
-    border: 1px solid #BDD5CB !important;
-    box-shadow: none !important;
-}
-div[data-testid="stButton"] button[kind="secondary"]:hover {
-    background: rgba(20, 90, 65, 0.16) !important;
-    border-color: #35C98B !important;
-}
-</style>
-""", unsafe_allow_html=True)
+st.subheader('🗄️ 로컬 ETF DB')
+t1,t2,t3=st.tabs(['ETF Master','ETF Holdings 미리보기','자동 테마 매핑'])
 
-flow_error=""
-try:
-    flow_rows=investor_trade_daily(KEY,SEC,paper,code)
-    flow_df=investor_df(flow_rows)
-except Exception as e:
-    flow_df=pd.DataFrame()
-    flow_error=str(e)
-
-st.markdown("### 👥 투자자 수급")
-st.caption("KIS · 종목별 투자자매매동향(일별) / FHPTJ04160001")
-if st.button("🔄 수급 새로고침", key=f"refresh_investor_{code}", use_container_width=False):
-    investor_trade_daily.clear()
-    st.rerun()
-
-if not flow_df.empty:
-    s5=investor_summary(flow_df,5); s20=investor_summary(flow_df,20)
-    c1,c2,c3=st.columns(3)
-    c1.metric("개인 · 최근 5일",fmt_qty(s5["개인"]),f"20일 {fmt_qty(s20['개인'])}",delta_color="off")
-    c2.metric("외국인 · 최근 5일",fmt_qty(s5["외국인"]),f"20일 {fmt_qty(s20['외국인'])}",delta_color="off")
-    c3.metric("기관 · 최근 5일",fmt_qty(s5["기관"]),f"20일 {fmt_qty(s20['기관'])}",delta_color="off")
-    fd=flow_df.tail(20).copy()
-    ff=go.Figure()
-    ff.add_trace(go.Bar(x=fd["date"],y=fd["개인"],name="개인"))
-    ff.add_trace(go.Bar(x=fd["date"],y=fd["외국인"],name="외국인"))
-    ff.add_trace(go.Bar(x=fd["date"],y=fd["기관"],name="기관"))
-    ff.update_layout(template="plotly_white", colorway=["#008878", "#4477BB", "#BB8645"], barmode="group",height=300,margin=dict(l=8,r=8,t=25,b=8),
-                     paper_bgcolor="#FFFFFF",plot_bgcolor="#FFFFFF",font=dict(color="#29483D"),
-                     legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified")
-    ff.update_xaxes(gridcolor="#E1EBE6")
-    ff.update_yaxes(gridcolor="#E1EBE6",title="순매수 수량(주)")
-    st.plotly_chart(ff,use_container_width=True,theme=None,key=f"investor_flow_{code}")
-    first_dt=flow_df["date"].min().strftime("%Y-%m-%d")
-    last_dt=flow_df["date"].max().strftime("%Y-%m-%d")
-    st.caption(f"※ KIS 종목별 투자자매매동향(일별) 기준 · 조회 데이터 {first_dt} ~ {last_dt} · 외국인은 KIS 제공 외국인 순매수 수량 기준입니다.")
-else:
-    if flow_error:
-        st.error(f"KIS 수급 조회 오류 · {flow_error}")
+with t1:
+    if master.empty:
+        st.info('저장된 ETF Master 데이터가 없습니다.')
     else:
-        st.info("조회된 투자자 수급 데이터가 없습니다. 기준일 또는 KIS 데이터 제공 상태를 확인해 주세요.")
+        st.dataframe(master,use_container_width=True,hide_index=True)
 
-st.markdown("### 🤖 HanaV 분석 어시스턴트")
-st.caption(f"현재 분석종목 · {api_name} {code} | 실적·밸류에이션·{pername} 차트·KIS 일별 투자자 수급을 자동으로 종합 해석합니다. AI API 비용 0원.")
+with t2:
+    if not db_available():
+        st.info('저장된 ETF Holdings 데이터가 없습니다.')
+    else:
+        preview=load_holdings_preview_db(db_token(),500)
+        st.caption(f"전체 {_stats['holdings']:,}건 중 최대 500건만 미리 표시합니다. 검색은 전체 DB를 대상으로 합니다.")
+        st.dataframe(preview,use_container_width=True,hide_index=True)
 
-analysis_fund=_selected_fund if "_selected_fund" in locals() else pd.DataFrame()
-analysis_sections=rule_based_stock_analysis(api_name,code,analysis_fund,d,cur,pername,flow_df)
+with t3:
+    if not db_available():
+        st.info('로컬 DB가 없습니다.')
+    elif _theme_error:
+        st.warning(f'자동 테마 매핑 오류: {_theme_error}')
+    else:
+        try:
+            with _db_connect() as conn:
+                theme_preview=pd.read_sql_query(
+                    'SELECT etf_code,region,asset_class,sector,subsector,score,evidence '
+                    'FROM etf_theme_map ORDER BY score DESC LIMIT 500',
+                    conn
+                )
+            st.caption(
+                f"전체 자동 매핑 {_theme_stats.get('rows',0):,}건 중 최대 500건을 표시합니다."
+            )
+            st.dataframe(theme_preview,use_container_width=True,hide_index=True)
+        except Exception as _e:
+            st.warning(f'테마 매핑 미리보기를 불러오지 못했습니다: {_e}')
 
-render_analysis_card("📊 실적",analysis_sections["실적"])
-render_analysis_card("💰 밸류에이션",analysis_sections["밸류에이션"])
-render_analysis_card("📈 차트",analysis_sections["차트"])
-render_analysis_card("👥 수급",analysis_sections["수급"])
-render_analysis_card("🔍 종합 해석",analysis_sections["종합"])
-render_analysis_card("⚠️ 체크포인트",analysis_sections["체크포인트"])
-
-st.markdown("---")
-_news_left, _news_right = st.columns([0.72, 1.78], gap="large")
-with _news_left:
-    st.markdown("## 📰 HanaV 뉴스")
-    st.caption("실시간 시장 뉴스 · Google News RSS · API 크레딧 사용 없음")
-    _news_mode=st.selectbox(
-        "뉴스 범위",
-        ["현재 종목","국내 증시","미국 증시","반도체","2차전지","로봇","자동차","방산"],
-        key="hanav_news_mode"
-    )
-    _news_queries={
-        "현재 종목":f"{api_name} {code} 주식",
-        "국내 증시":"코스피 코스닥 증시",
-        "미국 증시":"미국 증시 나스닥 S&P500 연준",
-        "반도체":"반도체 삼성전자 SK하이닉스 엔비디아 마이크론",
-        "2차전지":"2차전지 배터리 LG에너지솔루션 삼성SDI",
-        "로봇":"로봇 휴머노이드 로보티즈 레인보우로보틱스 두산로보틱스",
-        "자동차":"자동차 현대차 기아 전기차",
-        "방산":"방산 한화에어로스페이스 LIG넥스원 현대로템",
-    }
-    if st.button("🔄 뉴스 새로고침",key="hanav_news_refresh"):
-        hanav_google_news.clear()
-        st.rerun()
-with _news_right:
-    st.markdown(f"## 최신 뉴스 · {_news_mode}")
-    st.caption("기사 제목을 누르면 원문이 새 창에서 열립니다.")
-    render_hanav_news(_news_queries[_news_mode],8)
-
-
-st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
-
-st.caption("HanaV Trading PRO · KIS Open API 조회/분석 버전 · PER/ROE/시총/거래대금/거래량급증/신고가/이평선/실적개선 조건검색 · WiseReport 2025~2028 실적 분석 · 주문/자동매매 미포함")
-
-
-# ==================================================
-# ChatGPT 연결 패널 · OpenAI API 크레딧 사용 없음
-# - HanaV 내부에서 API를 호출하지 않습니다.
-# - 질문을 ChatGPT 웹으로 넘기며, 로그인된 ChatGPT 계정에서 대화를 이어갑니다.
-# ==================================================
-_chat_stock = html.escape(f"{api_name} ({code})", quote=True)
-_chat_context = html.escape(
-    f"HanaV Trading에서 현재 {_chat_stock} 종목을 보고 있어. "
-    f"현재가 {cur:,.0f}원, 등락률 {rate:+.2f}%야. 이 종목에 대해 질문할게: ",
-    quote=True,
-)
-
-st.markdown(f"""
-<style>
-.hanav-chat-box {{
-    position: fixed;
-    right: 22px;
-    bottom: 20px;
-    width: min(390px, calc(100vw - 34px));
-    z-index: 999998;
-    background: rgba(255, 255, 255, .98);
-    border: 1px solid #008878;
-    border-radius: 14px;
-    box-shadow: 0 12px 34px rgba(0,0,0,.48), 0 0 16px rgba(0,184,115,.10);
-    overflow: hidden;
-    font-family: Arial, sans-serif;
-}}
-.hanav-chat-head {{
-    padding: 10px 13px;
-    color: #203D35;
-    font-weight: 900;
-    background: linear-gradient(90deg,#E0F0E8,#F4F9F6);
-    border-bottom: 1px solid #C8DBD3;
-}}
-.hanav-chat-sub {{
-    margin-top: 3px;
-    color: #60766E;
-    font-size: 11px;
-    font-weight: 600;
-}}
-.hanav-chat-form {{ padding: 10px; }}
-.hanav-chat-input {{
-    width: 100%;
-    box-sizing: border-box;
-    background: #FFFFFF;
-    color: #07100C;
-    border: 1px solid #5A7B6F;
-    border-radius: 8px;
-    padding: 10px 11px;
-    font-size: 13px;
-    outline: none;
-}}
-.hanav-chat-input:focus {{ border-color: #008878; }}
-.hanav-chat-send {{
-    width: 100%;
-    margin-top: 8px;
-    padding: 9px 10px;
-    border: 1px solid #008878;
-    border-radius: 8px;
-    background: #008878;
-    color: white;
-    font-weight: 900;
-    cursor: pointer;
-}}
-.hanav-chat-note {{
-    padding: 0 10px 10px;
-    color: #687E74;
-    font-size: 10px;
-    line-height: 1.35;
-}}
-@media (max-width: 768px) {{
-    .hanav-chat-box {{ right: 10px; bottom: 10px; width: calc(100vw - 20px); }}
-}}
-</style>
-<div class="hanav-chat-box">
-  <div class="hanav-chat-head">
-    🤖 ChatGPT에게 물어보기
-    <div class="hanav-chat-sub">현재 종목 · {_chat_stock} · OpenAI API 크레딧 사용 없음</div>
-  </div>
-  <form class="hanav-chat-form" action="https://chatgpt.com/" method="get" target="_blank"
-        onsubmit="var i=this.querySelector('input[name=q]'); var u=i.value.trim(); if(!u){{i.focus(); return false;}} i.value=i.dataset.context + u;">
-    <input class="hanav-chat-input" type="text" name="q"
-           value=""
-           data-context="{_chat_context}"
-           placeholder="{_chat_stock}에 대해 질문을 입력하세요"
-           autocomplete="off"
-           aria-label="ChatGPT 질문" />
-    <button class="hanav-chat-send" type="submit">ChatGPT에서 질문하기 ↗</button>
-  </form>
-  <div class="hanav-chat-note">질문을 보내면 ChatGPT가 새 창에서 열립니다. HanaV Trading은 OpenAI API를 호출하지 않습니다.</div>
-</div>
-""", unsafe_allow_html=True)
