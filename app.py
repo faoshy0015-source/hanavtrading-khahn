@@ -16,6 +16,24 @@ import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
+
+st.markdown("""<style>
+:root { color-scheme:light; --text-color:#203D35; --background-color:#F4F8F7; --secondary-background-color:#EDF5F2; --primary-color:#008878; }
+.stApp, [data-testid="stAppViewContainer"] { background:#F4F8F7; color:#203D35; }
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p, [data-testid="stMarkdownContainer"] > p,
+h1,h2,h3,h4,[data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:#203D35; }
+[data-baseweb="input"], [data-baseweb="input"] > div, [data-baseweb="select"] > div,
+[data-baseweb="textarea"], [data-baseweb="popover"], [role="listbox"], [role="option"] { background:#FFFFFF !important; color:#203D35 !important; }
+input,textarea { color:#203D35 !important; caret-color:#008878; }
+button[kind="secondary"], [data-testid="stBaseButton-secondary"] { background:#FFFFFF; color:#205D4D; border:1px solid #C8DBD3; }
+button[kind="secondary"]:hover { background:#E5F2EC; border-color:#008878; }
+[data-testid="stExpander"] { background:#FFFFFF; border:1px solid #CFDFD9; border-radius:8px; }
+[data-testid="stExpander"] summary { color:#203D35; }
+[data-baseweb="tab"] { color:#536F64; }
+[data-baseweb="tab"][aria-selected="true"] { color:#007B69; background:#E3F1EB; }
+[data-testid="stMetric"] { background:#FFFFFF; border:1px solid #D4E3DC; border-radius:8px; padding:10px; }
+</style>""", unsafe_allow_html=True)
+
 # ==================================================
 # APP PASSWORD LOGIN
 # Streamlit Cloud > App settings > Secrets:
@@ -45,8 +63,8 @@ st.session_state.setdefault("_hanav_login_error",False)
 if not st.session_state["_hanav_authenticated"]:
     st.markdown("""
     <div style="max-width:430px;margin:11vh auto 22px;text-align:center;">
-      <div style="font-size:34px;font-weight:950;color:#00B873;">HanaV Trading</div>
-      <div style="margin-top:7px;color:#8FA69D;font-size:13px;font-weight:650;">Private Investment Dashboard</div>
+      <div style="font-size:34px;font-weight:950;color:#008878;">HanaV Trading</div>
+      <div style="margin-top:7px;color:#60766E;font-size:13px;font-weight:650;">Private Investment Dashboard</div>
       <div style="margin-top:4px;color:#6F847C;font-size:11px;">Designed &amp; Built by K.H. Ahn</div>
     </div>""",unsafe_allow_html=True)
 
@@ -71,15 +89,15 @@ PAPER_URL="https://openapivts.koreainvestment.com:29443"
 
 st.markdown("""<style>
 :root {
-    --hana-green:#00B86B;
-    --hana-green-bright:#18D487;
+    --hana-green:#008878;
+    --hana-green-bright:#008878;
     --hana-green-dark:#087A52;
-    --bg:#0B1110;
-    --panel:#111A17;
-    --panel-2:#16221E;
-    --border:#2A3B35;
-    --text:#F1F7F4;
-    --muted:#9EB0A9;
+    --bg:#F4F8F7;
+    --panel:#FFFFFF;
+    --panel-2:#EDF5F2;
+    --border:#CFDFD9;
+    --text:#203D35;
+    --muted:#60766E;
 }
 html, body, [data-testid="stAppViewContainer"], .stApp {
     background:var(--bg) !important; color:var(--text) !important; min-height:100vh !important;
@@ -94,29 +112,29 @@ header[data-testid="stHeader"] { background:transparent !important; height:2.5re
     max-width:100% !important; min-height:100vh !important; padding:.45rem .75rem .65rem .75rem !important;
 }
 section[data-testid="stSidebar"] {
-    background:#0E1714 !important; border-right:1px solid #274039 !important; top:0 !important; height:100vh !important;
+    background:#EDF5F2 !important; border-right:1px solid #CFDFD9 !important; top:0 !important; height:100vh !important;
 }
 section[data-testid="stSidebar"] > div { height:100vh !important; padding-top:.35rem !important; }
 section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 {
-    color:#EAF7F1 !important;
+    color:#00695F !important;
 }
-section[data-testid="stSidebar"] hr { border-color:#263B34 !important; }
+section[data-testid="stSidebar"] hr { border-color:#CFDFD9 !important; }
 .title {
-    background:linear-gradient(90deg,#0E211A 0%,#13251F 55%,#101A17 100%);
-    border:1px solid #256E52; border-left:4px solid var(--hana-green-bright);
-    padding:11px 15px; font-size:20px; font-weight:800; color:#F4FBF8; letter-spacing:.2px;
+    background:linear-gradient(90deg,#E2F1EB 0%,#F3F8F5 55%,#FFFFFF 100%);
+    border:1px solid #B8D6CA; border-left:4px solid var(--hana-green-bright);
+    padding:11px 15px; font-size:20px; font-weight:800; color:#163F35; letter-spacing:.2px;
 }
 .head {
-    background:linear-gradient(90deg,#123126 0%,#16241F 100%);
-    border:1px solid #269668; border-left:4px solid var(--hana-green-bright);
-    padding:10px 13px; font-weight:800; color:#F6FCF9;
+    background:linear-gradient(90deg,#DDEFE8 0%,#F0F7F3 100%);
+    border:1px solid #BCD9CE; border-left:4px solid var(--hana-green-bright);
+    padding:10px 13px; font-weight:800; color:#174F43;
 }
 .box {
-    background:#14201C; border:1px solid #315047; border-radius:6px; padding:9px; text-align:center;
+    background:#FFFFFF; border:1px solid #C8DBD3; border-radius:6px; padding:9px; text-align:center;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.02);
 }
-.lab { color:#9FB6AD; font-size:11px; font-weight:600; }
-.val { color:#F4FAF7; font-size:16px; font-weight:800; }
+.lab { color:#60766E; font-size:11px; font-weight:600; }
+.val { color:#203D35; font-size:16px; font-weight:800; }
 /* 입력창/셀렉트 가독성 */
 [data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input {
     background:#F4F7F5 !important; color:#14201C !important; border-color:#78958A !important;
@@ -125,67 +143,76 @@ section[data-testid="stSidebar"] hr { border-color:#263B34 !important; }
 [data-baseweb="select"] svg { fill:#28483D !important; }
 /* 버튼: 하나 그린 포인트 */
 .stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] {
-    background:#00A968 !important; color:white !important; border:1px solid #23D18B !important; font-weight:800 !important;
+    background:#008878 !important; color:white !important; border:1px solid #008878 !important; font-weight:800 !important;
 }
 .stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover {
-    background:#00BE76 !important; border-color:#52E6AA !important;
+    background:#006F62 !important; border-color:#A9CFC0 !important;
 }
 /* 슬라이더/토글 포인트 */
-[data-baseweb="slider"] [role="slider"] { background:#18D487 !important; }
-[data-testid="stToggle"] [data-checked="true"] { background:#00A968 !important; }
+[data-baseweb="slider"] [role="slider"] { background:#008878 !important; }
+[data-testid="stToggle"] [data-checked="true"] { background:#008878 !important; }
 /* 데이터프레임/알림 */
-[data-testid="stDataFrame"] { border:1px solid #2D4A40; border-radius:5px; overflow:hidden; }
-[data-testid="stAlert"] { border-color:#315047 !important; }
+[data-testid="stDataFrame"] { border:1px solid #CFDFD9; border-radius:5px; overflow:hidden; }
+[data-testid="stAlert"] { border-color:#C8DBD3 !important; }
 /* 캡션과 보조 텍스트 */
-[data-testid="stCaptionContainer"], .stCaption { color:#91A79E !important; }
+[data-testid="stCaptionContainer"], .stCaption { color:#60766E !important; }
 /* 스크롤바 */
 ::-webkit-scrollbar { width:9px; height:9px; }
-::-webkit-scrollbar-track { background:#0B1110; }
-::-webkit-scrollbar-thumb { background:#315047; border-radius:8px; }
-::-webkit-scrollbar-thumb:hover { background:#00A968; }
+::-webkit-scrollbar-track { background:#F4F8F7; }
+::-webkit-scrollbar-thumb { background:#C8DBD3; border-radius:8px; }
+::-webkit-scrollbar-thumb:hover { background:#008878; }
 
 /* ===== HTS HIGH-CONTRAST OVERRIDES ===== */
-.stApp, [data-testid="stAppViewContainer"] { background:#070B0A !important; color:#F7FFFB !important; }
-section[data-testid="stSidebar"] { background:#0A100E !important; border-right:1px solid #00B873 !important; }
-.title { background:#081611 !important; border:1px solid #00C97B !important; border-left:5px solid #20E99A !important; color:#FFFFFF !important; box-shadow:0 0 12px rgba(0,201,123,.12); }
-.head { background:#0B1A15 !important; border:1px solid #00D184 !important; border-left:5px solid #20E99A !important; color:#FFFFFF !important; }
-.box { background:#0D1512 !important; border:1px solid #34554A !important; border-top:2px solid #00B873 !important; }
-.lab { color:#AFC7BE !important; font-weight:700 !important; }
-.val { color:#FFFFFF !important; font-size:17px !important; }
-section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span { color:#DDEBE5 !important; }
-section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color:#37F0A7 !important; }
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background:#F8FFFC !important; color:#07100C !important; border:1px solid #00A968 !important; }
+.stApp, [data-testid="stAppViewContainer"] { background:#F4F8F7 !important; color:#203D35 !important; }
+section[data-testid="stSidebar"] { background:#EDF5F2 !important; border-right:1px solid #008878 !important; }
+.title { background:#E3F1EB !important; border:1px solid #008878 !important; border-left:5px solid #008878 !important; color:#203D35 !important; box-shadow:0 0 12px rgba(0,201,123,.12); }
+.head { background:#E7F3ED !important; border:1px solid #008878 !important; border-left:5px solid #008878 !important; color:#203D35 !important; }
+.box { background:#FFFFFF !important; border:1px solid #CADDD5 !important; border-top:2px solid #008878 !important; }
+.lab { color:#536F64 !important; font-weight:700 !important; }
+.val { color:#203D35 !important; font-size:17px !important; }
+section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span { color:#29483D !important; }
+section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color:#007B69 !important; }
+[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background:#F8FFFC !important; color:#07100C !important; border:1px solid #008878 !important; }
 [data-baseweb="select"] * { color:#07100C !important; }
-.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] { background:#00B873 !important; color:#001B10 !important; border:1px solid #43FFB5 !important; font-weight:900 !important; }
-.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { background:#24E89B !important; color:#00130C !important; }
-[data-testid="stDataFrame"] { border:1px solid #00A968 !important; }
-hr { border-color:#24453A !important; }
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] { background:#008878 !important; color:#001B10 !important; border:1px solid #008878 !important; font-weight:900 !important; }
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { background:#006F62 !important; color:#00130C !important; }
+[data-testid="stDataFrame"] { border:1px solid #008878 !important; }
+hr { border-color:#CFDFD9 !important; }
 
 /* 오늘의 시장 새로고침 버튼: 흰색 배경 제거 */
 .st-key-refresh_today_market button {
     background: transparent !important;
-    color: #DDEBE5 !important;
-    border: 1px solid #315047 !important;
+    color: #29483D !important;
+    border: 1px solid #C8DBD3 !important;
     font-weight: 800 !important;
 }
 .st-key-refresh_today_market button:hover {
     background: rgba(0, 184, 115, 0.08) !important;
-    color: #37F0A7 !important;
-    border-color: #00B873 !important;
+    color: #007B69 !important;
+    border-color: #008878 !important;
 }
 
 .st-key-refresh_earnings_top button {
     background: transparent !important;
-    color: #DDEBE5 !important;
-    border: 1px solid #315047 !important;
+    color: #29483D !important;
+    border: 1px solid #C8DBD3 !important;
     font-weight: 800 !important;
 }
 .st-key-refresh_earnings_top button:hover {
     background: rgba(0, 184, 115, 0.08) !important;
-    color: #37F0A7 !important;
-    border-color: #00B873 !important;
+    color: #007B69 !important;
+    border-color: #008878 !important;
 }
 
+
+
+/* HanaV light palette: mint surfaces and a deep teal brand header. */
+.title { background:linear-gradient(105deg,#005B51 0%,#008878 58%,#DCEFE6 100%) !important; color:white !important; border:1px solid #B8D6CA !important; border-left:5px solid #008878 !important; border-radius:10px; padding:18px 16px; box-shadow:0 2px 8px rgba(20,65,47,.06); }
+.head { background:linear-gradient(90deg,#DCEFE6,#F4F9F6) !important; color:#175447 !important; border-color:#C4DCD0 !important; border-radius:7px; }
+.box { background:#FFFFFF !important; box-shadow:0 2px 6px rgba(20,65,47,.04); }
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"],
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { color:white !important; }
+section[data-testid="stSidebar"] button[kind="primary"] p { color:white !important; }
 
 /* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
 @media (min-width: 769px) {
@@ -915,7 +942,7 @@ def auto_earnings_top5(candidate_records):
 def earnings_top_panel_html(rows):
     if not rows:
         body=(
-            '<div style="color:#8FA69D;font-size:12px;line-height:1.45;">'
+            '<div style="color:#60766E;font-size:12px;line-height:1.45;">'
             '실적개선 종목을 계산하지 못했거나 컨센서스가 부족합니다.</div>'
         )
     else:
@@ -924,17 +951,17 @@ def earnings_top_panel_html(rows):
         for i,r in enumerate(rows[:5]):
             parts.append(
                 f'<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;'
-                f'border-bottom:1px solid #183028;">'
-                f'<span style="color:#DDEBE5;font-weight:750;">{medals[i]}&nbsp; {r["name"]}</span>'
-                f'<span style="color:#FF6B75;font-weight:900;">+{r["score"]}점</span></div>'
+                f'border-bottom:1px solid #E0EBE6;">'
+                f'<span style="color:#29483D;font-weight:750;">{medals[i]}&nbsp; {r["name"]}</span>'
+                f'<span style="color:#D73749;font-weight:900;">+{r["score"]}점</span></div>'
             )
         body=''.join(parts)
     return (
-        '<div style="background:#0D1512;border:1px solid #315047;border-radius:6px;'
+        '<div style="background:#FFFFFF;border:1px solid #C8DBD3;border-radius:6px;'
         'padding:9px 10px;margin:8px 0 6px 0;">'
-        '<div style="color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:4px;">📈 실적개선 TOP 5</div>'
+        '<div style="color:#007B69;font-size:15px;font-weight:900;margin-bottom:4px;">📈 실적개선 TOP 5</div>'
         + body +
-        '<div style="color:#718A80;font-size:10px;margin-top:6px;">'
+        '<div style="color:#687E74;font-size:10px;margin-top:6px;">'
         '기준: 2025A→2028E · 시총 40→거래대금 20 · 6시간 캐시</div></div>'
     )
 
@@ -990,10 +1017,10 @@ def render_hanav_news(query, limit=7):
         title=html.escape(n["title"])
         link=html.escape(n["link"],quote=True)
         st.markdown(
-            f'<div style="background:#0D1512;border:1px solid #29483E;border-radius:7px;'
+            f'<div style="background:#FFFFFF;border:1px solid #CDDED6;border-radius:7px;'
             f'padding:8px 10px;margin:6px 0;">'
-            f'<div style="font-size:11px;color:#9EB0A9;">{tag}{source}</div>'
-            f'<a href="{link}" target="_blank" style="color:#F1F7F4;text-decoration:none;'
+            f'<div style="font-size:11px;color:#60766E;">{tag}{source}</div>'
+            f'<a href="{link}" target="_blank" style="color:#203D35;text-decoration:none;'
             f'font-weight:750;font-size:13px;line-height:1.4;">{title}</a></div>',
             unsafe_allow_html=True
         )
@@ -1194,9 +1221,9 @@ def rule_based_stock_analysis(name,code,fund,chart_df,current_price,period_name,
     return sections
 
 def render_analysis_card(title,body):
-    html=("<div style='background:#0D1512;border:1px solid #315047;border-radius:7px;padding:12px 14px;margin:7px 0;'>"
-          f"<div style='color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:6px;'>{title}</div>"
-          f"<div style='color:#DDEBE5;font-size:13px;line-height:1.65;'>{body}</div></div>")
+    html=("<div style='background:#FFFFFF;border:1px solid #C8DBD3;border-radius:7px;padding:12px 14px;margin:7px 0;'>"
+          f"<div style='color:#007B69;font-size:15px;font-weight:900;margin-bottom:6px;'>{title}</div>"
+          f"<div style='color:#29483D;font-size:13px;line-height:1.65;'>{body}</div></div>")
     st.markdown(html,unsafe_allow_html=True)
 
 def fig(d,n,c):
@@ -1214,11 +1241,11 @@ def fig(d,n,c):
     f.add_trace(go.Candlestick(
         x=d["date"], open=d["open"], high=d["high"], low=d["low"], close=d["close"],
         name="가격",
-        increasing_line_color="#FF4D5A", increasing_fillcolor="#FF4D5A",
-        decreasing_line_color="#3D8BFF", decreasing_fillcolor="#3D8BFF"
+        increasing_line_color="#D9364B", increasing_fillcolor="#D9364B",
+        decreasing_line_color="#2466C9", decreasing_fillcolor="#2466C9"
     ), row=1, col=1)
 
-    ma_colors = {"MA5":"#21E6A1", "MA20":"#F4F4F4", "MA60":"#FFD54A", "MA120":"#D98CFF"}
+    ma_colors = {"MA5":"#00856F", "MA20":"#596B80", "MA60":"#B67A00", "MA120":"#8B55B1"}
     for ma, color in ma_colors.items():
         if ma in d.columns:
             f.add_trace(go.Scatter(
@@ -1226,7 +1253,7 @@ def fig(d,n,c):
                 line=dict(color=color, width=1.5), connectgaps=False
             ), row=1, col=1)
 
-    volume_colors = ["#FF4D5A" if cl >= op else "#3D8BFF" for op, cl in zip(d["open"], d["close"])]
+    volume_colors = ["#D9364B" if cl >= op else "#2466C9" for op, cl in zip(d["open"], d["close"])]
     f.add_trace(go.Bar(
         x=d["date"], y=d["volume"], name="거래량",
         marker=dict(color=volume_colors, line=dict(width=0)), opacity=0.85,
@@ -1234,34 +1261,35 @@ def fig(d,n,c):
     ), row=2, col=1)
 
     f.update_layout(
-        title=dict(text=f"{n} | {c}", font=dict(size=16, color="#FFFFFF"), x=0.01),
+        template="plotly_white",
+        title=dict(text=f"{n} | {c}", font=dict(size=16, color="#203D35"), x=0.01),
         height=700,
         autosize=True,
-        paper_bgcolor="#080D0B",
-        plot_bgcolor="#080D0B",
-        font=dict(color="#DCEAE4", size=12),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font=dict(color="#29483D", size=12),
         margin=dict(l=8, r=12, t=48, b=8),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#101A16", bordercolor="#00C97B", font_color="#FFFFFF"),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#008878", font_color="#203D35"),
         legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"),
         bargap=0.08,
         dragmode="pan"
     )
     f.update_xaxes(
         rangeslider_visible=False,
-        gridcolor="#1D302A", zeroline=False,
-        showspikes=True, spikecolor="#00C97B", spikethickness=1,
+        gridcolor="#E1EBE6", zeroline=False,
+        showspikes=True, spikecolor="#008878", spikethickness=1,
         spikemode="across", spikesnap="cursor",
-        tickfont=dict(color="#AFC7BE")
+        tickfont=dict(color="#536F64")
     )
     f.update_yaxes(
-        side="right", gridcolor="#1D302A", zeroline=False,
-        tickfont=dict(color="#CFE0D9"), fixedrange=False,
+        side="right", gridcolor="#E1EBE6", zeroline=False,
+        tickfont=dict(color="#536F64"), fixedrange=False,
         row=1, col=1
     )
     f.update_yaxes(
-        side="right", gridcolor="#16251F", zeroline=False,
-        tickfont=dict(color="#9FB7AE"), title_text="거래량",
+        side="right", gridcolor="#E1EBE6", zeroline=False,
+        tickfont=dict(color="#60766E"), title_text="거래량",
         row=2, col=1
     )
     return f
@@ -1295,23 +1323,23 @@ def market_panel_html(items):
     rows=[]
     for label,value,rate in items:
         if value is None:
-            value_txt="-"; rate_txt="-"; color="#AFC7BE"
+            value_txt="-"; rate_txt="-"; color="#536F64"
         else:
             value_txt=f"{value:,.2f}"
             rate_txt="-" if rate is None else f"{rate:+.2f}%"
-            color="#AFC7BE" if rate is None else ("#FF4D5A" if rate>0 else ("#3D8BFF" if rate<0 else "#DCEAE4"))
+            color="#536F64" if rate is None else ("#D9364B" if rate>0 else ("#2466C9" if rate<0 else "#29483D"))
         rows.append(
-            f'<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #183028;">'
-            f'<span style="color:#DDEBE5;font-weight:700;">{label}</span>'
-            f'<span><b style="color:#FFFFFF;">{value_txt}</b>&nbsp;&nbsp;<b style="color:{color};">{rate_txt}</b></span></div>'
+            f'<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #E0EBE6;">'
+            f'<span style="color:#29483D;font-weight:700;">{label}</span>'
+            f'<span><b style="color:#203D35;">{value_txt}</b>&nbsp;&nbsp;<b style="color:{color};">{rate_txt}</b></span></div>'
         )
     return (
-        '<div style="background:#0D1512;border:1px solid #00B873;border-radius:6px;padding:9px 10px;margin:4px 0 8px 0;">'
-        '<div style="color:#37F0A7;font-size:15px;font-weight:900;margin-bottom:5px;">📊 오늘의 시장</div>'
+        '<div style="background:#FFFFFF;border:1px solid #008878;border-radius:6px;padding:9px 10px;margin:4px 0 8px 0;">'
+        '<div style="color:#007B69;font-size:15px;font-weight:900;margin-bottom:5px;">📊 오늘의 시장</div>'
         + ''.join(rows) +
         f'<div style="display:flex;justify-content:space-between;padding-top:7px;">'
-        f'<span style="color:#AFC7BE;font-weight:700;">시장 분위기</span>'
-        f'<span style="color:#FFFFFF;font-weight:900;">{mood}</span></div></div>'
+        f'<span style="color:#536F64;font-weight:700;">시장 분위기</span>'
+        f'<span style="color:#203D35;font-weight:900;">{mood}</span></div></div>'
     )
 
 st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
@@ -1326,10 +1354,10 @@ with st.sidebar:
     st.markdown(
         """
         <div style="margin:0 0 8px 0; padding:0;">
-            <div style="color:#37F0A7; font-size:18px; font-weight:900; line-height:1.15;">
+            <div style="color:#007B69; font-size:18px; font-weight:900; line-height:1.15;">
                 HanaV Trading
             </div>
-            <div style="color:#8FA69D; font-size:11px; font-weight:600; letter-spacing:0.3px; margin-top:2px;">
+            <div style="color:#60766E; font-size:11px; font-weight:600; letter-spacing:0.3px; margin-top:2px;">
                 Designed &amp; Built by K.H. Ahn
             </div>
         </div>
@@ -1578,9 +1606,9 @@ with st.expander("📊 기업실적 상세보기 · 2025~2028 영업이익 / EPS
             op=f3.dropna(subset=["영업이익"]).copy()
             if not op.empty:
                 pf=go.Figure(go.Bar(x=op["연도"].astype(str), y=op["영업이익"], text=[f"{x:,.0f}" for x in op["영업이익"]], textposition="outside"))
-                pf.update_layout(title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#080D0B", plot_bgcolor="#080D0B", font=dict(color="#DCEAE4"), xaxis_title="연도", yaxis_title="영업이익(억원)", showlegend=False)
-                pf.update_xaxes(gridcolor="#1D302A")
-                pf.update_yaxes(gridcolor="#1D302A")
+                pf.update_layout(template="plotly_white", title="2025~2028 영업이익 추이", height=300, margin=dict(l=8,r=8,t=45,b=8), paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF", font=dict(color="#29483D"), xaxis_title="연도", yaxis_title="영업이익(억원)", showlegend=False)
+                pf.update_xaxes(gridcolor="#E1EBE6")
+                pf.update_yaxes(gridcolor="#E1EBE6")
                 st.plotly_chart(pf, use_container_width=True, theme=None, key=f"fundamental_profit_{code}")
             st.caption("※ 출처: 네이버 증권 종목분석에 연결된 WiseReport Financial Summary. 2026E~2028E는 컨센서스이며 수시로 변경될 수 있습니다. 공개 HTML 구조 변경 시 조회 기능 수정이 필요할 수 있습니다.")
     except Exception as e:
@@ -1592,15 +1620,15 @@ st.markdown("""
 /* 차트 주기 라벨/선택값/옵션 글자 밝게 */
 div[data-testid="stSelectbox"] label,
 div[data-testid="stSelectbox"] label p {
-    color:#F4FFF9 !important;
+    color:#203D35 !important;
     opacity:1 !important;
     font-weight:800 !important;
 }
 div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-    color:#F4FFF9 !important;
+    color:#203D35 !important;
 }
 div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
-    color:#F4FFF9 !important;
+    color:#203D35 !important;
     opacity:1 !important;
 }
 </style>
@@ -1655,19 +1683,19 @@ st.markdown("""
 <style>
 /* 투자자 수급 숫자 시인성 */
 div[data-testid="stMetricValue"] {
-    color: #F4FFF9 !important;
+    color: #203D35 !important;
     opacity: 1 !important;
 }
 div[data-testid="stMetricDelta"] {
-    color: #D8F5E8 !important;
+    color: #536F64 !important;
     opacity: 1 !important;
 }
 
 /* 수급 새로고침 버튼: 흰 배경 제거 */
 div[data-testid="stButton"] button[kind="secondary"] {
     background: transparent !important;
-    color: #E9FFF6 !important;
-    border: 1px solid #285C4A !important;
+    color: #29483D !important;
+    border: 1px solid #BDD5CB !important;
     box-shadow: none !important;
 }
 div[data-testid="stButton"] button[kind="secondary"]:hover {
@@ -1702,11 +1730,11 @@ if not flow_df.empty:
     ff.add_trace(go.Bar(x=fd["date"],y=fd["개인"],name="개인"))
     ff.add_trace(go.Bar(x=fd["date"],y=fd["외국인"],name="외국인"))
     ff.add_trace(go.Bar(x=fd["date"],y=fd["기관"],name="기관"))
-    ff.update_layout(barmode="group",height=300,margin=dict(l=8,r=8,t=25,b=8),
-                     paper_bgcolor="#080D0B",plot_bgcolor="#080D0B",font=dict(color="#DCEAE4"),
+    ff.update_layout(template="plotly_white", colorway=["#008878", "#4477BB", "#BB8645"], barmode="group",height=300,margin=dict(l=8,r=8,t=25,b=8),
+                     paper_bgcolor="#FFFFFF",plot_bgcolor="#FFFFFF",font=dict(color="#29483D"),
                      legend=dict(orientation="h",y=1.08,x=0),hovermode="x unified")
-    ff.update_xaxes(gridcolor="#1D302A")
-    ff.update_yaxes(gridcolor="#1D302A",title="순매수 수량(주)")
+    ff.update_xaxes(gridcolor="#E1EBE6")
+    ff.update_yaxes(gridcolor="#E1EBE6",title="순매수 수량(주)")
     st.plotly_chart(ff,use_container_width=True,theme=None,key=f"investor_flow_{code}")
     first_dt=flow_df["date"].min().strftime("%Y-%m-%d")
     last_dt=flow_df["date"].max().strftime("%Y-%m-%d")
@@ -1784,8 +1812,8 @@ st.markdown(f"""
     bottom: 20px;
     width: min(390px, calc(100vw - 34px));
     z-index: 999998;
-    background: rgba(8, 18, 14, .97);
-    border: 1px solid #00B873;
+    background: rgba(255, 255, 255, .98);
+    border: 1px solid #008878;
     border-radius: 14px;
     box-shadow: 0 12px 34px rgba(0,0,0,.48), 0 0 16px rgba(0,184,115,.10);
     overflow: hidden;
@@ -1793,14 +1821,14 @@ st.markdown(f"""
 }}
 .hanav-chat-head {{
     padding: 10px 13px;
-    color: #FFFFFF;
+    color: #203D35;
     font-weight: 900;
-    background: linear-gradient(90deg,#0B2118,#0D1713);
-    border-bottom: 1px solid #244B3D;
+    background: linear-gradient(90deg,#E0F0E8,#F4F9F6);
+    border-bottom: 1px solid #C8DBD3;
 }}
 .hanav-chat-sub {{
     margin-top: 3px;
-    color: #91A79E;
+    color: #60766E;
     font-size: 11px;
     font-weight: 600;
 }}
@@ -1808,7 +1836,7 @@ st.markdown(f"""
 .hanav-chat-input {{
     width: 100%;
     box-sizing: border-box;
-    background: #F7FFFB;
+    background: #FFFFFF;
     color: #07100C;
     border: 1px solid #5A7B6F;
     border-radius: 8px;
@@ -1816,21 +1844,21 @@ st.markdown(f"""
     font-size: 13px;
     outline: none;
 }}
-.hanav-chat-input:focus {{ border-color: #18D487; }}
+.hanav-chat-input:focus {{ border-color: #008878; }}
 .hanav-chat-send {{
     width: 100%;
     margin-top: 8px;
     padding: 9px 10px;
-    border: 1px solid #43FFB5;
+    border: 1px solid #008878;
     border-radius: 8px;
-    background: #00B873;
-    color: #001B10;
+    background: #008878;
+    color: white;
     font-weight: 900;
     cursor: pointer;
 }}
 .hanav-chat-note {{
     padding: 0 10px 10px;
-    color: #718A80;
+    color: #687E74;
     font-size: 10px;
     line-height: 1.35;
 }}
