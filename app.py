@@ -702,18 +702,31 @@ def normalize_sectors(rows):
     return sorted(result.values(), key=lambda item: (-item["rate"], item["name"]))
 
 
-def pro_filter_candidates(k,s,paper,base_rows,master,settings):
+def pro_filter_candidates(k,s,paper,base_rows,master,settings,progress=None):
     """등락률 순위 후보를 KIS 현재가 + 마스터 ROE + 일봉으로 2차 필터링."""
-    if not base_rows: return []
+    from collections import Counter
+    reasons=Counter()
+    checked=0
+    passed_basic=0
+    if not base_rows:
+        return [], {"checked":0,"passed_basic":0,"reasons":{},"candidates":0}
     mlookup=master.drop_duplicates('code').set_index('code') if not master.empty else pd.DataFrame()
     out=[]
     for i,row in enumerate(base_rows):
         code=str(row.get('mksc_shrn_iscd') or row.get('stck_shrn_iscd') or '').zfill(6)
-        if len(code)!=6: continue
+        checked+=1
+        if progress:
+            progress(i+1,len(base_rows))
+        if len(code)!=6 or not code.isdigit() or code=='000000':
+            reasons['종목코드 누락']+=1
+            continue
         try:
             q=price(k,s,paper,code)
+            if not q or not q.get('stck_prpr'):
+                reasons['현재가 데이터 누락']+=1
+                continue
             cur=num(q.get('stck_prpr')); turnover=num(q.get('acml_tr_pbmn'))/1e8
-            cap=num(q.get('hts_avls')); per=num(q.get('per'))
+            cap=num(q.get('hts_avls')); per=pd.to_numeric(q.get('per'),errors='coerce')
             high250=num(q.get('d250_hgpr'))
             near_pct=((high250-cur)/high250*100) if high250>0 and cur>0 else None
             roe=None; prev_vol=None; market=''
@@ -725,29 +738,50 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
                 market=str(mr.get('market',''))
             cur_vol=num(q.get('acml_vol'))
             surge=(cur_vol/float(prev_vol)*100) if prev_vol is not None and pd.notna(prev_vol) and float(prev_vol)>0 else None
-            if settings['market']!='전체' and market and market!=settings['market']: continue
-            if settings['turnover_on'] and turnover < settings['turnover_min']: continue
-            if settings['cap_on'] and not in_range(cap,settings['cap_min'],settings['cap_max']): continue
-            if settings['surge_on'] and (surge is None or surge < settings['surge_min']): continue
-            if settings['high_on'] and (near_pct is None or near_pct > settings['high_near']): continue
-            if settings['per_on'] and not in_range(per,settings['per_min'],settings['per_max']): continue
-            if settings['roe_on'] and not in_range(roe,settings['roe_min'],settings['roe_max']): continue
+            if settings['market']!='전체' and market and market!=settings['market']:
+                reasons['시장 조건']+=1
+                continue
+            if settings['turnover_on'] and turnover < settings['turnover_min']:
+                reasons['거래대금 조건']+=1
+                continue
+            if settings['cap_on'] and not in_range(cap,settings['cap_min'],settings['cap_max']):
+                reasons['시가총액 조건']+=1
+                continue
+            if settings['surge_on'] and (surge is None or surge < settings['surge_min']):
+                reasons['거래량 급증 조건·자료부족']+=1
+                continue
+            if settings['high_on'] and (near_pct is None or near_pct > settings['high_near']):
+                reasons['신고가 조건·자료부족']+=1
+                continue
+            if settings['per_on'] and not in_range(per,settings['per_min'],settings['per_max']):
+                reasons['PER 조건·자료부족']+=1
+                continue
+            if settings['roe_on'] and not in_range(roe,settings['roe_min'],settings['roe_max']):
+                reasons['ROE 조건·자료부족']+=1
+                continue
             d=None
             if settings['ma_condition']!='사용 안 함':
                 d=chartdf(chart(k,s,paper,code,'D'))
-                if not ma_match(d,settings['ma_condition']): continue
+                if not ma_match(d,settings['ma_condition']):
+                    reasons['이평선 조건·자료부족']+=1
+                    continue
 
+            passed_basic+=1
             earnings_signal=''
             earnings_score=None
             earnings_reason=''
             if settings.get('earnings_improve_on',False):
                 try:
                     fdf=naver_fundamental_2025_2028(code)
+                    if fdf is None or fdf.empty:
+                        reasons['실적 데이터 없음']+=1
+                        continue
                     earnings_signal,earnings_score,earnings_reason=earnings_momentum(fdf)
                 except Exception:
-                    # 컨센서스 조회가 안 되는 종목은 '실적개선 종목만' 필터에서 제외
+                    reasons['실적 조회 실패']+=1
                     continue
                 if earnings_signal != '📈 실적개선':
+                    reasons['실적개선 판정 미충족']+=1
                     continue
 
             enriched=dict(row)
@@ -759,8 +793,9 @@ def pro_filter_candidates(k,s,paper,base_rows,master,settings):
             if len(out)>=settings['result_count']: break
             time.sleep(0.04)
         except Exception:
+            reasons['시세·차트 조회 또는 처리 실패']+=1
             continue
-    return out
+    return out, {"checked":checked,"passed_basic":passed_basic,"reasons":dict(reasons),"candidates":len(base_rows)}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def naver_fundamental_2025_2028(code):
@@ -1622,7 +1657,7 @@ with st.sidebar:
         "📈 실적개선 종목만", False,
         help="WiseReport 2025A~2028E의 영업이익·EPS·PER·ROE 흐름을 종합해 '실적개선'으로 판정된 종목만 남깁니다. 컨센서스가 없는 종목은 제외됩니다."
     )
-    candidate_count=st.slider("1차 후보 수",10,50,40,5,help="KIS 등락률 순위에서 먼저 가져올 후보 수")
+    candidate_count=st.slider("1차 후보 수",10,50,40,5,help="전체 종목 전수검색이 아닙니다. KIS 등락률 상위 후보 중 선택한 수만 검사하며 실제 반환 수는 API에 따라 다를 수 있습니다.")
     result_count=st.slider("최종 결과 수",5,30,20,5)
     run_scan=st.button("조건검색 PRO 실행",type="primary",use_container_width=True)
 
@@ -1636,6 +1671,8 @@ except Exception as e:
     st.error(f"KIS 인증 실패: {e}");st.stop()
 
 if run_scan:
+    st.session_state.rows=[]
+    st.session_state.pop("pro_diagnostics",None)
     try:
         settings={
             'market':market,'turnover_on':turnover_on,'turnover_min':turnover_min,
@@ -1650,7 +1687,13 @@ if run_scan:
             spinner_text = "조건검색 PRO 분석 중 · 1차 필터 통과 종목의 2025~2028 실적 컨센서스까지 확인하고 있습니다..."
         with st.spinner(spinner_text):
             base=scan(KEY,SEC,paper,mcode,candidate_count,lo,hi,vol,r1,r2)
-            st.session_state.rows=pro_filter_candidates(KEY,SEC,paper,base,master,settings)
+            _scan_progress=st.progress(0,text=f"후보 {len(base)}개 분석 시작")
+            def _update_scan_progress(done,total):
+                _scan_progress.progress(done/max(total,1),text=f"후보 {done}/{total} 분석 중 · 실적 조회 포함 시 시간이 걸릴 수 있습니다")
+            st.session_state.rows,st.session_state.pro_diagnostics=pro_filter_candidates(
+                KEY,SEC,paper,base,master,settings,progress=_update_scan_progress)
+            _scan_progress.empty()
+            st.session_state.pro_scan_settings=dict(settings)
         st.session_state.pop("matches_table",None)
         st.session_state.pro_candidate_count=len(base)
     except Exception as e:
@@ -1658,10 +1701,28 @@ if run_scan:
 rows=st.session_state.get("rows",[])
 rd=pd.DataFrame(rows) if rows else pd.DataFrame()
 
+_diag=st.session_state.get("pro_diagnostics")
+if _diag is not None:
+    if not _diag["candidates"]:
+        st.warning("KIS에서 1차 후보를 받지 못했습니다. 시장·등락률·가격·거래량 범위를 확인해 주세요.")
+    elif not rows:
+        st.warning(f"검색 완료: 후보 {_diag['checked']}개를 검사했지만 모든 조건을 함께 만족하는 종목이 없습니다.")
+    else:
+        st.success(f"검색 완료: 후보 {_diag['checked']}개 검사 → {len(rows)}개 일치")
+    with st.expander("검색 진단 · 제외 사유 확인",expanded=not bool(rows)):
+        st.caption("전체 종목 전수검색이 아니라 KIS 등락률 순위에서 받은 후보를 검사합니다. 제외 사유는 종목별 첫 탈락 조건 기준입니다.")
+        st.write(f"받은 후보 {_diag['candidates']}개 · 검사 {_diag['checked']}개 · 기본조건 통과 {_diag['passed_basic']}개")
+        if _diag["reasons"]:
+            st.dataframe(pd.DataFrame([{"제외 사유":k,"종목 수":v} for k,v in _diag["reasons"].items()]),hide_index=True,use_container_width=True)
+        if _diag["reasons"].get("실적 조회 실패",0) or _diag["reasons"].get("실적 데이터 없음",0):
+            st.info("실적을 확인할 수 없는 종목은 실적개선으로 판단하지 않습니다. 조회 실패와 실적개선 조건 미충족은 서로 다릅니다.")
+        if not rows:
+            st.caption("더 넓게 찾으려면 후보 수를 늘리거나, PER 범위 또는 실적개선 필터를 직접 조정한 뒤 다시 검색하세요. 설정한 조건은 자동 완화하지 않습니다.")
+
 # 조건검색 결과가 있을 때만 접을 수 있는 전체폭 결과표를 표시합니다.
 # 검색 전에는 MATCHES/안내 영역을 만들지 않아 종목 상세와 차트가 화면 전체 폭을 사용합니다.
 if not rd.empty:
-    with st.expander(f"🔎 조건검색 PRO 결과 · {len(rd)}종목", expanded=False):
+    with st.expander(f"🔎 조건검색 PRO 결과 · {len(rd)}종목", expanded=True):
         cc=next((x for x in ["_code","mksc_shrn_iscd","stck_shrn_iscd"] if x in rd),None)
         nc=next((x for x in ["hts_kor_isnm","prdt_name"] if x in rd),None)
         colmap={cc:"코드",nc:"종목명","stck_prpr":"현재가","prdy_ctrt":"등락률","acml_vol":"거래량",
