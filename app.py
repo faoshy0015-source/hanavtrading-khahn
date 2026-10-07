@@ -245,6 +245,16 @@ section[data-testid="stSidebar"] button[kind="primary"] p,
 section[data-testid="stSidebar"] button[kind="primary"] span {color:#FFFFFF!important;font-weight:800!important}
 section[data-testid="stSidebar"] hr {border-color:#ADC7B9!important}
 
+
+.gainers-grid {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:0 0 5px}
+.gainer-card {background:#FFFFFF;border:1px solid #C8DBD3;border-top:3px solid #008878;border-radius:8px;padding:11px 12px}
+.gainer-rank {color:#536F64;font-size:11px;font-weight:700}
+.gainer-name {color:#173E31;font-size:15px;font-weight:800;overflow-wrap:anywhere;margin:5px 0}
+.gainer-rate {color:#D9364B;font-size:23px;font-weight:850}
+.gainer-price {color:#435D51;font-size:12px;margin-top:3px}
+@media(max-width:900px) {.gainers-grid {grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:540px) {.gainers-grid {grid-template-columns:repeat(2,minmax(0,1fr))}}
+
 /* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
 @media (min-width: 769px) {
     section[data-testid="stSidebar"] {
@@ -597,6 +607,46 @@ def ma_match(d, condition):
     if condition == "20/60 골든크로스":
         return pd.notna(prev['MA60']) and prev['MA20'] <= prev['MA60'] and last['MA20'] > last['MA60']
     return True
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def market_sectors(k, secret_key, paper, market):
+    from zoneinfo import ZoneInfo
+    is_kospi = market == "코스피"
+    response = client(k, secret_key, paper).get(
+        "/uapi/domestic-stock/v1/quotations/inquire-index-category-price", "FHPUP02140000",
+        {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": "0001" if is_kospi else "1001",
+         "FID_COND_SCR_DIV_CODE": "20214", "FID_MRKT_CLS_CODE": "K" if is_kospi else "Q",
+         "FID_BLNG_CLS_CODE": "3" if is_kospi else "0"})
+    rows = response.get("output2", [])
+    if not isinstance(rows, list):
+        raise ValueError("업종 목록 응답 형식 오류")
+    return rows, datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+
+
+def normalize_sectors(rows):
+    import math
+    result = {}
+    # Omit broad market, size, style and venture group indices from industry ranking.
+    excluded = ("코스피", "코스닥", "KOSPI", "KOSDAQ", "대형", "중형", "소형",
+                "종합", "벤처", "우량기업", "중견기업", "신성장", "기술성장", "배당", "ESG")
+    for row in rows:
+        name = str(row.get("hts_kor_isnm") or "").strip()
+        code = str(row.get("bstp_cls_code") or "").strip()
+        if not name or any(word in name.upper() for word in excluded):
+            continue
+        try:
+            rate = float(str(row.get("bstp_nmix_prdy_ctrt", "")).replace(",", ""))
+            value = float(str(row.get("bstp_nmix_prpr", "")).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(rate) or not math.isfinite(value) or value <= 0:
+            continue
+        if str(row.get("prdy_vrss_sign", "")) in ("4", "5"):
+            rate = -abs(rate)
+        result[code or name] = {"code": code, "name": name, "rate": rate, "index": value}
+    return sorted(result.values(), key=lambda item: (-item["rate"], item["name"]))
+
 
 def pro_filter_candidates(k,s,paper,base_rows,master,settings):
     """등락률 순위 후보를 KIS 현재가 + 마스터 ROE + 일봉으로 2차 필터링."""
@@ -1374,6 +1424,7 @@ def market_panel_html(items):
     )
 
 st.markdown('<div class="title">HanaV Trading </div>',unsafe_allow_html=True)
+_gainers_slot = st.container()
 
 if not KEY or not SEC:
     st.error("KIS_APP_KEY / KIS_APP_SECRET이 설정되지 않았습니다.")
@@ -1589,6 +1640,43 @@ if not rd.empty:
                 code = str(chosen[cc]).zfill(6)
                 name = str(chosen[nc])
         st.caption(f"1차 후보 {st.session_state.get('pro_candidate_count', len(rd))}개 → 최종 {len(rd)}개 · 행 클릭 시 오른쪽 차트 변경")
+
+
+with _gainers_slot:
+    _rank_title, _rank_market_col, _rank_action = st.columns([3, 1.4, 1])
+    with _rank_title:
+        st.markdown("#### 📈 오늘 상승률 상위 업종 TOP 5")
+    with _rank_market_col:
+        _sector_market = st.selectbox("업종 시장", ["코스피", "코스닥"], key="sector_rank_market", label_visibility="collapsed")
+    with _rank_action:
+        if st.button("↻ 새로고침", key="refresh_sector_rank", use_container_width=True):
+            market_sectors.clear()
+    try:
+        _rank_rows, _rank_time = market_sectors(KEY, SEC, paper, _sector_market)
+        _sectors = normalize_sectors(_rank_rows)
+        _leaders = [row for row in _sectors if row["rate"] > 0][:5]
+        if _leaders:
+            _cards = []
+            for _i, _r in enumerate(_leaders, 1):
+                _cards.append(
+                    '<div class="gainer-card">'
+                    f'<div class="gainer-rank">{_i}위 · {html.escape(_sector_market)}</div>'
+                    f'<div class="gainer-name">{html.escape(_r["name"])}</div>'
+                    f'<div class="gainer-rate">+{_r["rate"]:.2f}%</div>'
+                    f'<div class="gainer-price">업종지수 {_r["index"]:,.2f}</div></div>'
+                )
+            st.markdown('<div class="gainers-grid">'+''.join(_cards)+'</div>', unsafe_allow_html=True)
+            if len(_leaders) < 5:
+                st.caption(f"현재 상승 업종은 {len(_leaders)}개입니다.")
+        elif _sectors:
+            st.info("현재 상승 중인 업종이 없습니다.")
+        else:
+            st.info("표시할 업종 시세가 없습니다. 새로고침을 눌러 다시 조회해 주세요.")
+        st.caption(f"KIS 업종지수 전일 대비율 기준 · 조회 {_rank_time} (한국시간) · 1분 캐시 · 휴장 시 최근 거래일 자료")
+    except Exception:
+        st.info("업종 순위를 불러오지 못했습니다. 새로고침을 눌러 다시 조회해 주세요.")
+
+st.markdown("##### 🔎 선택 종목 상세")
 
 try:qv=price(KEY,SEC,paper,code)
 except Exception as e:st.error(f"현재가 조회 오류: {e}");st.stop()
