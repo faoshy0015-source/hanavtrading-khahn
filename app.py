@@ -214,6 +214,37 @@ hr { border-color:#CFDFD9 !important; }
 .stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover { color:white !important; }
 section[data-testid="stSidebar"] button[kind="primary"] p { color:white !important; }
 
+
+/* Sidebar readability: dark labels, distinct controls and legible disabled values. */
+section[data-testid="stSidebar"] {background:#E5EFEA!important;border-right:1px solid #A9C3B7!important}
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+section[data-testid="stSidebar"] label p,
+section[data-testid="stSidebar"] label span {color:#142E25!important;font-size:14px!important;font-weight:700!important;opacity:1!important}
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] h5 {color:#064B3C!important;font-weight:850!important;background:#D1E5DA;border-left:4px solid #007B69;border-radius:5px;padding:9px 10px!important}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {color:#435D51!important;font-size:12px!important;opacity:1!important}
+section[data-testid="stSidebar"] [data-baseweb="input"],
+section[data-testid="stSidebar"] [data-baseweb="input"]>div,
+section[data-testid="stSidebar"] [data-baseweb="select"]>div {background:#FFFFFF!important;border-color:#91B3A2!important}
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] [data-baseweb="select"] span,
+section[data-testid="stSidebar"] [data-baseweb="select"] div {color:#142E25!important;font-weight:650!important}
+section[data-testid="stSidebar"] input:disabled {background:#DFE7E2!important;color:#52665B!important;-webkit-text-fill-color:#52665B!important;opacity:1!important;cursor:not-allowed}
+section[data-testid="stSidebar"] [data-baseweb="input"]:has(input:disabled),
+section[data-testid="stSidebar"] [data-baseweb="input"]:has(input:disabled)>div {background:#DFE7E2!important;border-color:#B7C6BD!important}
+section[data-testid="stSidebar"] input::placeholder {color:#62786B!important;opacity:1}
+section[data-testid="stSidebar"] [data-testid="stCheckbox"] {padding:5px 8px;background:#F7FAF8;border:1px solid #C0D3C8;border-radius:6px}
+section[data-testid="stSidebar"] [data-testid="stCheckbox"]:has(input:checked) {background:#CEE8DA;border-color:#007B69}
+section[data-testid="stSidebar"] [data-testid="stCheckbox"] label:has(input:checked) p {color:#004E3D!important;font-weight:800!important}
+section[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMin"],
+section[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMax"] {color:#435D51!important}
+section[data-testid="stSidebar"] button[kind="primary"],
+section[data-testid="stSidebar"] button[kind="primary"] p,
+section[data-testid="stSidebar"] button[kind="primary"] span {color:#FFFFFF!important;font-weight:800!important}
+section[data-testid="stSidebar"] hr {border-color:#ADC7B9!important}
+
 /* ===== FORCE SIDEBAR V2: 접힘 상태여도 왼쪽 패널을 강제로 표시 ===== */
 @media (min-width: 769px) {
     section[data-testid="stSidebar"] {
