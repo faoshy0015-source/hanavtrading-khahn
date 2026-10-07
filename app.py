@@ -1365,6 +1365,196 @@ def hanav_calendar_window(start_iso, days):
 
     return earnings_rows, macro_rows, errors
 
+
+# ==================================================
+# 국내 주요 일정 · Bullstory 공개 캘린더 (API KEY 불필요)
+# - 국내 기업 실적: KIND 등 공식 공시 기반 + 과거 발표주기 예상기간
+# - 국내 매크로: 한국은행·통계청 등 공식 발표일정 취합
+# - 예상기간은 확정 일정이 아니므로 UI에 '예상'으로 명확히 구분
+# ==================================================
+_BULLSTORY_CAL_URL = "https://bullstory.io/calendar"
+_BULLSTORY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://bullstory.io/",
+}
+
+# 국내 시장에 미치는 영향이 큰 대표 종목 우선순위.
+# 현재 선택 종목은 별도로 최우선 포함한다.
+_HANAV_KR_MAJOR_EARNINGS = [
+    ("005930", "삼성전자"), ("000660", "SK하이닉스"),
+    ("373220", "LG에너지솔루션"), ("006400", "삼성SDI"),
+    ("005380", "현대차"), ("000270", "기아"), ("012330", "현대모비스"),
+    ("035420", "네이버"), ("035720", "카카오"),
+    ("105560", "KB금융"), ("055550", "신한지주"), ("086790", "하나금융지주"),
+    ("329180", "HD현대중공업"), ("042660", "한화오션"), ("010140", "삼성중공업"),
+    ("012450", "한화에어로스페이스"), ("079550", "LIG넥스원"), ("064350", "현대로템"),
+    ("267260", "HD현대일렉트릭"), ("298040", "효성중공업"),
+    ("277810", "레인보우로보틱스"), ("454910", "두산로보틱스"),
+    ("003490", "대한항공"), ("051910", "LG화학"), ("066570", "LG전자"),
+    ("000810", "삼성화재"), ("032830", "삼성생명"), ("016360", "삼성증권"),
+    ("028260", "삼성물산"), ("034020", "두산에너빌리티"),
+]
+
+# 화면 표기는 짧게, 검색은 여러 별칭으로 허용한다.
+_HANAV_KR_MACRO = [
+    ("한국은행 기준금리", ["한국은행 기준금리", "기준금리"], "★★★"),
+    ("소비자물가", ["소비자물가"], "★★★"),
+    ("GDP", ["GDP", "실질 국내총생산", "국내총생산"], "★★★"),
+    ("고용동향", ["고용동향", "고용"], "★★"),
+    ("경상수지", ["경상수지", "국제수지"], "★★"),
+    ("산업활동동향", ["산업활동동향", "산업활동"], "★★"),
+    ("생산자물가", ["생산자물가"], "★★"),
+    ("수출입물가", ["수출입물가"], "★★"),
+    ("소비자심리지수", ["소비자심리지수", "소비심리"], "★★"),
+    ("기업경기실사지수", ["기업경기실사지수", "기업경기"], "★"),
+    ("통화량", ["통화량"], "★"),
+    ("은행 예금·대출 금리", ["은행 예금과 대출 금리", "예금과 대출 금리"], "★"),
+]
+
+
+def _hanav_html_to_text(raw):
+    raw = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", str(raw or ""))
+    raw = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", raw)
+    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+    raw = html.unescape(raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def hanav_korea_calendar_source():
+    r = requests.get(_BULLSTORY_CAL_URL, headers=_BULLSTORY_HEADERS, timeout=12)
+    r.raise_for_status()
+    return _hanav_html_to_text(r.text)
+
+
+def _hanav_ko_date(y, m, d):
+    try:
+        return datetime(int(y), int(m), int(d)).date()
+    except Exception:
+        return None
+
+
+def _hanav_range_label(a, b):
+    if not a or not b:
+        return "-"
+    if a == b:
+        return _hanav_day_label(a.isoformat())
+    if a.year == b.year:
+        return f"{a.month}/{a.day}~{b.month}/{b.day}"
+    return f"{a.year}.{a.month}.{a.day}~{b.year}.{b.month}.{b.day}"
+
+
+def _hanav_overlaps(a, b, start, end):
+    return bool(a and b and a <= end and b >= start)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def hanav_korea_calendar_window(start_iso, days, selected_code="", selected_name=""):
+    start = datetime.strptime(start_iso, "%Y-%m-%d").date()
+    end = start + timedelta(days=max(int(days), 1) - 1)
+    errors = []
+    try:
+        text = hanav_korea_calendar_source()
+    except Exception as e:
+        return [], [], [f"국내 일정: {e}"]
+
+    # 현재 선택 종목을 가장 먼저 보고, 이후 주요 대형주/시장민감주를 확인한다.
+    companies = []
+    seen = set()
+    if str(selected_name or "").strip():
+        companies.append((str(selected_code or "").strip(), str(selected_name).strip()))
+        seen.add(str(selected_name).strip().lower())
+    for code, name in _HANAV_KR_MAJOR_EARNINGS:
+        if name.lower() not in seen:
+            companies.append((code, name))
+            seen.add(name.lower())
+
+    kr_earn = []
+    for priority, (code, name) in enumerate(companies):
+        # Bullstory 표기: "회사명 예상 기간 2026년 10월 3일부터 2026년 10월 17일 사이로 예상됩니다."
+        pat = (
+            rf"{re.escape(name)}\s*예상\s*기간\s*"
+            rf"(20\d{{2}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일부터\s*"
+            rf"(20\d{{2}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일\s*사이로\s*예상됩니다"
+        )
+        m = re.search(pat, text, flags=re.I)
+        if not m:
+            # 문구가 약간 달라질 경우를 위한 느슨한 패턴
+            pat2 = (
+                rf"{re.escape(name)}[^0-9]{{0,30}}"
+                rf"(20\d{{2}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일부터\s*"
+                rf"(20\d{{2}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일"
+            )
+            m = re.search(pat2, text, flags=re.I)
+        if not m:
+            continue
+        a = _hanav_ko_date(m.group(1), m.group(2), m.group(3))
+        b = _hanav_ko_date(m.group(4), m.group(5), m.group(6))
+        if not _hanav_overlaps(a, b, start, end):
+            continue
+        kr_earn.append({
+            "시장": "🇰🇷",
+            "날짜/기간": _hanav_range_label(a, b),
+            "구분": "예상",
+            "코드": code or "-",
+            "기업": name,
+            "참고": "KIND 발표주기 기반",
+            "_sort": a.isoformat() if a else "9999-12-31",
+            "_priority": priority,
+        })
+
+    # 선택 종목 + 중요 종목 중심. 예상기간이 겹치는 기업이 많아도 최대 10개만 표시한다.
+    kr_earn.sort(key=lambda x: (x.get("_sort", ""), x.get("_priority", 999)))
+    kr_earn = kr_earn[:10]
+    for r in kr_earn:
+        r.pop("_sort", None)
+        r.pop("_priority", None)
+
+    # 한국 거시 일정은 이름 뒤에 붙는 YYYY년 M월 D일 HH:MM 패턴을 읽는다.
+    kr_macro = []
+    used = set()
+    for display, aliases, stars in _HANAV_KR_MACRO:
+        found = None
+        for alias in aliases:
+            p = (
+                rf"{re.escape(alias)}\s*"
+                rf"(20\d{{2}})년\s*(\d{{1,2}})월\s*(\d{{1,2}})일"
+                rf"(?:\s*(\d{{1,2}}:\d{{2}}))?"
+            )
+            m = re.search(p, text, flags=re.I)
+            if m:
+                found = m
+                break
+        if not found:
+            continue
+        d = _hanav_ko_date(found.group(1), found.group(2), found.group(3))
+        if not d or not (start <= d <= end):
+            continue
+        key = (display, d.isoformat())
+        if key in used:
+            continue
+        used.add(key)
+        kr_macro.append({
+            "시장": "🇰🇷",
+            "날짜": _hanav_day_label(d.isoformat()),
+            "시각": f"{found.group(4)} KST" if found.group(4) else "KST",
+            "중요도": stars,
+            "지표": display,
+            "예상": "-",
+            "이전": "-",
+            "실제": "-",
+            "_date": d.isoformat(),
+            "_level": len(stars),
+        })
+
+    kr_macro.sort(key=lambda x: (x.get("_date", ""), -x.get("_level", 0), x.get("시각", "")))
+    for r in kr_macro:
+        r.pop("_date", None)
+        r.pop("_level", None)
+
+    return kr_earn, kr_macro, errors
+
 def fmt_profit(v):
     if v is None or pd.isna(v): return "-"
     # 원 단위 → 억원
@@ -2231,9 +2421,9 @@ with _news_right:
 
 
 # ==================================================
-# 주요 일정 캘린더
+# 주요 일정 캘린더 · 한국 + 미국
 # ==================================================
-st.markdown('<div class="hv-section hv-section-calendar">📅 주요 일정 캘린더</div>', unsafe_allow_html=True)
+st.markdown('<div class="hv-section hv-section-calendar">📅 주요 일정 캘린더 · 한국 + 미국</div>', unsafe_allow_html=True)
 _cal_c1, _cal_c2, _cal_c3 = st.columns([1.05, 0.75, 0.65])
 with _cal_c1:
     _cal_start = st.date_input(
@@ -2243,54 +2433,98 @@ with _cal_c1:
         format="YYYY-MM-DD",
     )
 with _cal_c2:
-    _cal_days = st.selectbox("표시 기간", [3, 5, 7], index=2, format_func=lambda x: f"향후 {x}일", key="hanav_calendar_days")
+    _cal_days = st.selectbox(
+        "표시 기간", [3, 5, 7, 14], index=2,
+        format_func=lambda x: f"향후 {x}일", key="hanav_calendar_days"
+    )
 with _cal_c3:
     st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
     if st.button("🔄 일정 새로고침", key="hanav_calendar_refresh", use_container_width=True):
         hanav_calendar_window.clear()
+        hanav_korea_calendar_source.clear()
+        hanav_korea_calendar_window.clear()
         st.rerun()
 
+_cal_errors = []
 try:
-    _earn_rows, _macro_rows, _cal_errors = hanav_calendar_window(_cal_start.isoformat(), int(_cal_days))
+    _us_earn, _us_macro, _us_errors = hanav_calendar_window(_cal_start.isoformat(), int(_cal_days))
+    _cal_errors.extend(_us_errors)
 except Exception as _cal_e:
-    _earn_rows, _macro_rows, _cal_errors = [], [], [str(_cal_e)]
+    _us_earn, _us_macro = [], []
+    _cal_errors.append(f"미국 일정: {_cal_e}")
+
+try:
+    _kr_earn, _kr_macro, _kr_errors = hanav_korea_calendar_window(
+        _cal_start.isoformat(), int(_cal_days), str(code), str(api_name)
+    )
+    _cal_errors.extend(_kr_errors)
+except Exception as _cal_e:
+    _kr_earn, _kr_macro = [], []
+    _cal_errors.append(f"국내 일정: {_cal_e}")
+
+# 미국 실적을 국내 표 형식과 통합
+_all_earn = list(_kr_earn)
+for r in _us_earn:
+    _all_earn.append({
+        "시장": "🇺🇸",
+        "날짜/기간": r.get("날짜", "-"),
+        "구분": r.get("시각", "미정"),
+        "코드": r.get("티커", "-"),
+        "기업": r.get("기업", "-"),
+        "참고": f"EPS {r.get('EPS 예상', '-')}" if r.get("EPS 예상") not in (None, "", "-") else "-",
+    })
+
+# 국내 매크로와 미국 매크로를 같은 표에서 구분
+_all_macro = list(_kr_macro)
+for r in _us_macro:
+    _all_macro.append({
+        "시장": "🇺🇸",
+        "날짜": r.get("날짜", "-"),
+        "시각": f"{r.get('미국 현지', '-')} ET",
+        "중요도": r.get("중요도", "주요"),
+        "지표": r.get("지표", "-"),
+        "예상": r.get("예상", "-"),
+        "이전": r.get("이전", "-"),
+        "실제": r.get("실제", "-"),
+    })
 
 _cal_left, _cal_right = st.columns([1.28, 1.0], gap="large")
 with _cal_left:
     st.markdown("**🏢 주요 기업 실적 발표**")
-    st.caption("미국 상장사 · 날짜별 시가총액 상위 8개 · 장전/장후 구분")
-    if _earn_rows:
-        _earn_df = pd.DataFrame(_earn_rows)
+    st.caption("🇰🇷 국내 중요기업 실적 예상기간 + 🇺🇸 미국 상장사 시총 상위 종목")
+    if _all_earn:
+        _earn_df = pd.DataFrame(_all_earn)
         st.dataframe(
             _earn_df,
             use_container_width=True,
             hide_index=True,
             height=min(430, 38 + 35 * min(len(_earn_df), 11)),
             column_config={
-                "날짜": st.column_config.TextColumn("날짜", width="small"),
-                "시각": st.column_config.TextColumn("시각", width="small"),
-                "티커": st.column_config.TextColumn("티커", width="small"),
+                "시장": st.column_config.TextColumn("시장", width="small"),
+                "날짜/기간": st.column_config.TextColumn("날짜/기간", width="medium"),
+                "구분": st.column_config.TextColumn("구분", width="small"),
+                "코드": st.column_config.TextColumn("코드", width="small"),
                 "기업": st.column_config.TextColumn("기업", width="large"),
-                "EPS 예상": st.column_config.TextColumn("EPS 예상", width="small"),
-                "시가총액": st.column_config.TextColumn("시가총액", width="medium"),
+                "참고": st.column_config.TextColumn("참고", width="medium"),
             },
         )
     else:
-        st.info("선택 기간에 표시할 주요 기업 실적 일정이 없거나 데이터를 불러오지 못했습니다.")
+        st.info("선택 기간에 표시할 국내·미국 주요 기업 실적 일정이 없거나 데이터를 불러오지 못했습니다.")
 
 with _cal_right:
-    st.markdown("**🌐 미국 주요 매크로 발표**")
-    st.caption("CPI·PCE·고용·FOMC·GDP·ISM·소매판매 등 시장 영향도가 높은 일정")
-    if _macro_rows:
-        _macro_df = pd.DataFrame(_macro_rows)
+    st.markdown("**🌐 주요 매크로 발표**")
+    st.caption("🇰🇷 한국은행·통계청 주요 지표 + 🇺🇸 CPI·PCE·고용·FOMC·GDP·ISM 등")
+    if _all_macro:
+        _macro_df = pd.DataFrame(_all_macro)
         st.dataframe(
             _macro_df,
             use_container_width=True,
             hide_index=True,
             height=min(430, 38 + 35 * min(len(_macro_df), 11)),
             column_config={
+                "시장": st.column_config.TextColumn("시장", width="small"),
                 "날짜": st.column_config.TextColumn("날짜", width="small"),
-                "미국 현지": st.column_config.TextColumn("미국 현지", width="small"),
+                "시각": st.column_config.TextColumn("시각", width="small"),
                 "중요도": st.column_config.TextColumn("중요도", width="small"),
                 "지표": st.column_config.TextColumn("지표", width="large"),
                 "예상": st.column_config.TextColumn("예상", width="small"),
@@ -2299,13 +2533,16 @@ with _cal_right:
             },
         )
     else:
-        st.info("선택 기간에 표시할 미국 주요 매크로 일정이 없거나 데이터를 불러오지 못했습니다.")
+        st.info("선택 기간에 표시할 국내·미국 주요 매크로 일정이 없거나 데이터를 불러오지 못했습니다.")
 
-st.caption("※ 일정 데이터: Nasdaq Calendar · 기업 실적은 날짜별 시가총액 상위 종목 중심 · 매크로 시간은 미국 현지 표기 · 외부 데이터 제공 구조 변경 시 일시적으로 조회가 제한될 수 있습니다.")
+st.caption(
+    "※ 국내 기업의 '예상' 기간은 확정 공시가 아니라 과거 KIND 발표 주기를 이용한 추정 범위입니다. "
+    "국내 거시는 KST, 미국 거시는 ET 기준으로 표시됩니다. 미국 실적은 Nasdaq Calendar 기준입니다."
+)
 if _cal_errors:
     with st.expander("일정 데이터 연결 상태", expanded=False):
-        st.caption("일부 날짜의 외부 일정 조회가 실패했습니다. 새로고침 후 다시 시도해 주세요.")
-        st.code("\n".join(_cal_errors[:6]))
+        st.caption("일부 외부 일정 조회가 실패했습니다. 새로고침 후 다시 시도해 주세요.")
+        st.code("\n".join(_cal_errors[:8]))
 
 
 st.caption("※ 생성형 AI가 아닌 규칙 기반 데이터 해석입니다. 종목·차트 주기를 변경하면 분석도 자동으로 갱신됩니다. 투자판단·수익을 보장하지 않으며 컨센서스와 시장가격은 변경될 수 있습니다.")
