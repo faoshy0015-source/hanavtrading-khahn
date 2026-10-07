@@ -624,6 +624,42 @@ def market_sectors(k, secret_key, paper, market):
     return rows, datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
 
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sector_stock_gainers(k, secret_key, paper, sector_code):
+    from zoneinfo import ZoneInfo
+    # Never fall back to an all-market ranking when the industry code is missing.
+    sector_code = str(sector_code).strip()
+    if not sector_code.isdigit() or int(sector_code) == 0:
+        raise ValueError("유효한 업종 코드가 없습니다.")
+    rows = client(k, secret_key, paper).scan(sector_code.zfill(4), 30, 0, 0, 0, 0, 1000)
+    return rows, datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+
+
+def normalize_sector_stocks(rows, master, market):
+    import math
+    market_code = "KOSPI" if market == "코스피" else "KOSDAQ"
+    names = {str(r.code).zfill(6): str(r.name)
+             for r in master[master["market"] == market_code].itertuples()}
+    result = {}
+    for row in rows:
+        code = str(row.get("stck_shrn_iscd") or row.get("mksc_shrn_iscd") or "").zfill(6)
+        if code not in names:
+            continue
+        try:
+            rate = float(str(row.get("prdy_ctrt", "")).replace(",", ""))
+            value = float(str(row.get("stck_prpr", "")).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if str(row.get("prdy_vrss_sign", "")) in ("4", "5"):
+            rate = -abs(rate)
+        if not math.isfinite(rate) or not math.isfinite(value) or rate <= 0 or value <= 0:
+            continue
+        result[code] = {"종목명": row.get("hts_kor_isnm") or names[code],
+                        "종목코드": code, "현재가(원)": value, "등락률(%)": rate}
+    return sorted(result.values(), key=lambda r: (-r["등락률(%)"], r["종목코드"]))[:5]
+
+
 def normalize_sectors(rows):
     import math
     result = {}
@@ -1651,21 +1687,57 @@ with _gainers_slot:
     with _rank_action:
         if st.button("↻ 새로고침", key="refresh_sector_rank", use_container_width=True):
             market_sectors.clear()
+            sector_stock_gainers.clear()
     try:
         _rank_rows, _rank_time = market_sectors(KEY, SEC, paper, _sector_market)
         _sectors = normalize_sectors(_rank_rows)
         _leaders = [row for row in _sectors if row["rate"] > 0][:5]
         if _leaders:
-            _cards = []
-            for _i, _r in enumerate(_leaders, 1):
-                _cards.append(
-                    '<div class="gainer-card">'
-                    f'<div class="gainer-rank">{_i}위 · {html.escape(_sector_market)}</div>'
-                    f'<div class="gainer-name">{html.escape(_r["name"])}</div>'
-                    f'<div class="gainer-rate">+{_r["rate"]:.2f}%</div>'
-                    f'<div class="gainer-price">업종지수 {_r["index"]:,.2f}</div></div>'
-                )
-            st.markdown('<div class="gainers-grid">'+''.join(_cards)+'</div>', unsafe_allow_html=True)
+            _visible_sector_ids = {(_sector_market, r["code"]) for r in _leaders}
+            if st.session_state.get("_selected_sector_rank") not in _visible_sector_ids:
+                st.session_state.pop("_selected_sector_rank", None)
+            _sector_columns = st.columns(len(_leaders))
+            for _i, (_r, _col) in enumerate(zip(_leaders, _sector_columns), 1):
+                with _col:
+                    _sector_id = (_sector_market, _r["code"])
+                    _active = st.session_state.get("_selected_sector_rank") == _sector_id
+                    if st.button(
+                        f'{_i}위 · {_r["name"]}  +{_r["rate"]:.2f}%',
+                        key=f'sector_card_{_sector_market}_{_r["code"]}',
+                        type="primary" if _active else "secondary",
+                        use_container_width=True,
+                        help="클릭하면 이 업종의 상승률 상위 5개 종목을 표시합니다.",
+                    ):
+                        if _active:
+                            st.session_state.pop("_selected_sector_rank", None)
+                        else:
+                            st.session_state["_selected_sector_rank"] = _sector_id
+                        st.rerun()
+                    st.caption(f'업종지수 {_r["index"]:,.2f}')
+            st.caption("업종을 클릭하면 상승 종목 TOP 5가 펼쳐집니다. 다시 클릭하면 닫힙니다.")
+            _selected_sector = next((r for r in _leaders
+                if (_sector_market, r["code"]) == st.session_state.get("_selected_sector_rank")), None)
+            if _selected_sector:
+                st.markdown(f'**{html.escape(_selected_sector["name"])} · 상승 종목 TOP 5**')
+                try:
+                    with st.spinner("업종 내 상승 종목을 조회하고 있습니다..."):
+                        _stock_rows, _stock_time = sector_stock_gainers(KEY, SEC, paper, _selected_sector["code"])
+                        _stock_leaders = normalize_sector_stocks(_stock_rows, master, _sector_market)
+                    if _stock_leaders:
+                        _stock_view = pd.DataFrame(_stock_leaders)
+                        _stock_view.insert(0, "순위", range(1, len(_stock_view) + 1))
+                        st.dataframe(_stock_view, hide_index=True, use_container_width=True,
+                            column_config={
+                                "현재가(원)": st.column_config.NumberColumn(format="%.0f"),
+                                "등락률(%)": st.column_config.NumberColumn(format="%+.2f%%"),
+                            })
+                        if len(_stock_leaders) < 5:
+                            st.caption(f"조회된 상승 종목은 {len(_stock_leaders)}개입니다.")
+                    else:
+                        st.info("이 업종에서 조회된 상승 종목이 없습니다.")
+                    st.caption(f"KIS 업종별 등락률 순위 · 조회 {_stock_time} (한국시간) · 1분 캐시")
+                except Exception:
+                    st.warning("이 업종의 종목 순위를 불러오지 못했습니다. 상단 새로고침을 눌러 주세요.")
             if len(_leaders) < 5:
                 st.caption(f"현재 상승 업종은 {len(_leaders)}개입니다.")
         elif _sectors:
