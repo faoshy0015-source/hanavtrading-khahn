@@ -15,6 +15,11 @@ import html
 import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+# When EMAIL_ACCESS_MODE=enforced, verify Supabase Auth identity and central
+# approved email grant before the existing APP_PASSWORD / app data access.
+from approved_email_gate import require_approved_email
+require_approved_email(st, "hanav-trading", "HanaV Trading")
+
 
 
 st.markdown("""<style>
