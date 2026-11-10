@@ -16,6 +16,9 @@ import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="HanaV Trading", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
+from email_access import require_approved_email
+require_approved_email(st)
+
 
 st.markdown("""<style>
 :root { color-scheme:light; --text-color:#203D35; --background-color:#F4F8F7; --secondary-background-color:#EDF5F2; --primary-color:#008878; }
